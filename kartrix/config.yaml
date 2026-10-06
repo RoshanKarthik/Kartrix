@@ -59,6 +59,39 @@ index:                          # what gets indexed (on top of every .gitignore 
     - id_rsa*
     - id_ed25519*
 
+workspace:                      # file tools are jailed to the repo Kartrix runs in (gitignore syntax below)
+  deny_read:                    # never read (or sent to the LLM)
+    - .git/
+    - .kartrix/*
+    - "!.kartrix/skills/"
+    - .env
+    - .env.*
+    - "!.env.example"
+    - "!.env.sample"
+    - "!.env.template"
+    - "*.pem"
+    - "*.key"
+    - "*.p12"
+    - "*.pfx"
+    - id_rsa*
+    - id_ed25519*
+    - "!*.pub"
+  deny_write:                   # never created, changed or overwritten
+    - .git/
+    - .kartrix/
+    - .env
+    - .env.*
+    - "!.env.example"
+    - "!.env.sample"
+    - "!.env.template"
+    - "*.pem"
+    - "*.key"
+    - "*.p12"
+    - "*.pfx"
+    - id_rsa*
+    - id_ed25519*
+  max_file_kb: 2048             # largest file the tools will load or write
+
 retrieval:
   mode: hybrid                  # hybrid (pgvector + Postgres full-text, RRF) | dense | sparse
   top_k: 5

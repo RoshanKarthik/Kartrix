@@ -5,12 +5,15 @@ from kartrix.llm.factory import get_llm, get_model_middleware
 from kartrix.mcp.mcp_client import get_mcp_tools
 from kartrix.observability.logger import get_logger
 from kartrix.skills.skill_tools import build_skills_prompt, load_skill
+from kartrix.tools.filesystem_tools import READ_TOOLS, WRITE_TOOLS
 from kartrix.tools.terminal_tools import run_command, run_in_directory
 
 logger = get_logger(__name__)
 
 SYSTEM_PROMPT = """You are a senior software engineer with deep knowledge of the codebase.
 Always use the search_codebase tool before answering any question.
+Use grep, glob and read_file to look at exact code, and edit_file for small changes to existing files.
+File paths are relative to the repository root; files outside it, secrets and .git are off limits.
 Reference specific file names, function names and line numbers in your answers.
 If you cannot find the answer in the codebase, say so explicitly."""
 
@@ -28,6 +31,8 @@ async def build_agent(checkpointer):
     tools = [
         search_codebase,
         load_skill,
+        *READ_TOOLS,
+        *WRITE_TOOLS,
         run_command,
         run_in_directory,
         *mcp_tools,

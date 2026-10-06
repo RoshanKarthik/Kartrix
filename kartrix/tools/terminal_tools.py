@@ -1,7 +1,8 @@
-import os
 import subprocess
 
 from langchain.tools import tool
+
+from kartrix.security.workspace import WorkspaceError, get_workspace
 
 _BLOCKED_COMMANDS = {"rm -rf /", "mkfs", "dd if=", ":(){:|:&};:"}
 _TIMEOUT_SECONDS = 30
@@ -24,7 +25,7 @@ def _format_result(result: subprocess.CompletedProcess) -> str:
 
 @tool
 def run_command(command: str) -> str:
-    """Run a shell command and return its output. Times out after 30 seconds."""
+    """Run a shell command in the workspace root and return its output. Times out after 30 seconds."""
     if not command or not command.strip():
         return "Error: command cannot be empty"
     if _is_blocked(command):
@@ -36,6 +37,7 @@ def run_command(command: str) -> str:
             shell=True,
             capture_output=True,
             text=True,
+            cwd=get_workspace().root,
             timeout=_TIMEOUT_SECONDS,
         )
         return _format_result(result)
@@ -47,15 +49,15 @@ def run_command(command: str) -> str:
 
 @tool
 def run_in_directory(command: str, directory: str) -> str:
-    """Run a shell command inside a specific directory. Times out after 30 seconds."""
+    """Run a shell command inside a directory of the workspace. Times out after 30 seconds."""
     if not command or not command.strip():
         return "Error: command cannot be empty"
-    if not directory or not directory.strip():
-        return "Error: directory cannot be empty"
-    if not os.path.exists(directory):
-        return f"Error: directory does not exist: {directory}"
-    if not os.path.isdir(directory):
-        return f"Error: path is not a directory: {directory}"
+    try:
+        cwd = get_workspace().resolve(directory, "read")
+    except WorkspaceError as e:
+        return f"Error: {e}"
+    if not cwd.is_dir():
+        return f"Error: not a directory: {directory}"
     if _is_blocked(command):
         return "Error: command is not allowed for safety reasons"
     try:
@@ -65,7 +67,7 @@ def run_in_directory(command: str, directory: str) -> str:
             shell=True,
             capture_output=True,
             text=True,
-            cwd=directory,
+            cwd=cwd,
             timeout=_TIMEOUT_SECONDS,
         )
         return _format_result(result)

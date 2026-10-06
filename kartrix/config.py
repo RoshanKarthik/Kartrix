@@ -127,6 +127,49 @@ class IndexSettings(_Section):
     )
 
 
+class WorkspaceSettings(_Section):
+    """Workspace jail (B1): gitignore-style patterns, relative to the repo root, that file
+    tools may not read / write even though they are inside the workspace."""
+
+    deny_read: list[str] = Field(
+        default_factory=lambda: [
+            ".git/",  # .git/config can hold credentials in remote URLs
+            ".kartrix/*",
+            "!.kartrix/skills/",  # skill support files are read with read_file
+            ".env",
+            ".env.*",
+            "!.env.example",
+            "!.env.sample",
+            "!.env.template",
+            "*.pem",
+            "*.key",
+            "*.p12",
+            "*.pfx",
+            "id_rsa*",
+            "id_ed25519*",
+            "!*.pub",
+        ]
+    )
+    deny_write: list[str] = Field(
+        default_factory=lambda: [
+            ".git/",  # writing hooks would run arbitrary code
+            ".kartrix/",
+            ".env",
+            ".env.*",
+            "!.env.example",
+            "!.env.sample",
+            "!.env.template",
+            "*.pem",
+            "*.key",
+            "*.p12",
+            "*.pfx",
+            "id_rsa*",
+            "id_ed25519*",
+        ]
+    )
+    max_file_kb: int = Field(2048, gt=0)  # largest file read_file/edit_file load, or write_file writes
+
+
 class RetrievalSettings(_Section):
     mode: Literal["hybrid", "dense", "sparse"] = "hybrid"  # hybrid = pgvector + full-text, fused with RRF
     top_k: int = Field(5, gt=0)
@@ -195,6 +238,7 @@ class Settings(BaseSettings):
     memory: MemorySettings = MemorySettings()
     index: IndexSettings = IndexSettings()
     retrieval: RetrievalSettings = RetrievalSettings()
+    workspace: WorkspaceSettings = WorkspaceSettings()
     database: DatabaseSettings = DatabaseSettings()
     logging: LoggingSettings = LoggingSettings()
 

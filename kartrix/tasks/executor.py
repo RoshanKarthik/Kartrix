@@ -8,29 +8,24 @@ from pydantic import BaseModel
 
 from kartrix.llm.factory import get_chat_model, get_model_middleware
 from kartrix.observability.logger import get_logger
-from kartrix.tools.filesystem_tools import (
-    append_file,
-    file_exists,
-    list_directory,
-    read_file,
-    write_file,
-)
+from kartrix.tools.filesystem_tools import READ_TOOLS, WRITE_TOOLS, edit_file, write_file
 from kartrix.tools.terminal_tools import run_command
 
 logger = get_logger(__name__)
 
 
 # Each task type gets a minimal, focused toolset — least privilege per task.
+# All file tools are jailed to the workspace (kartrix.security.workspace).
 _TOOLS_BY_TYPE: dict[str, list] = {
-    "design": [read_file, write_file, list_directory],
-    "implement": [read_file, write_file, append_file, list_directory],
-    "test": [read_file, write_file, append_file, list_directory, run_command],
-    "review": [read_file, write_file],
-    "integrate": [read_file, write_file, append_file, list_directory, run_command],
-    "configure": [read_file, write_file, list_directory, file_exists],
+    "design": [*READ_TOOLS, write_file, edit_file],
+    "implement": [*READ_TOOLS, *WRITE_TOOLS],
+    "test": [*READ_TOOLS, *WRITE_TOOLS, run_command],
+    "review": [*READ_TOOLS, write_file, edit_file],
+    "integrate": [*READ_TOOLS, *WRITE_TOOLS, run_command],
+    "configure": [*READ_TOOLS, *WRITE_TOOLS],
 }
 
-_DEFAULT_TOOLS = [read_file, write_file, list_directory]
+_DEFAULT_TOOLS = [*READ_TOOLS, write_file, edit_file]
 
 
 def _parse_json_field(val) -> list:

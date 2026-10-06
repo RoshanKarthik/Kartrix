@@ -13,6 +13,7 @@ returned. Symlinks are never followed, so indexing can't escape the repo.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -137,26 +138,42 @@ def _join(rel_dir: str, name: str) -> str:
     return f"{rel_dir}/{name}" if rel_dir else name
 
 
-def discover_files(root: str | Path, repo_filter: RepoFilter | None = None) -> list[Path]:
-    """Walk ``root`` and return every indexable file (absolute paths, sorted)."""
-    flt = repo_filter or RepoFilter.load(root)
-    found: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(flt.root, followlinks=False):
+def iter_files(flt: RepoFilter, start: str | Path | None = None) -> Iterator[Path]:
+    """Yield every non-ignored regular file under ``start`` (default: the root), in sorted
+    walk order. Unlike :func:`discover_files` there is no extension/size/binary filter.
+
+    An explicit ``start`` inside an ignored directory is still walked (the caller asked for
+    it), but the .gitignore files above it are loaded so rules below it still apply."""
+    base = Path(os.path.abspath(flt.root / start)) if start is not None else flt.root
+    rel_base = flt.rel(base)
+    if rel_base is None or not base.is_dir():
+        return
+    rel_base = "" if rel_base == "." else rel_base
+    parts = rel_base.split("/") if rel_base else []
+    for i in range(len(parts)):
+        flt.add_gitignore("/".join(parts[:i]))
+
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
         rel_dir = Path(dirpath).relative_to(flt.root).as_posix()
         rel_dir = "" if rel_dir == "." else rel_dir
         if ".gitignore" in filenames:
             flt.add_gitignore(rel_dir)
-
         # Prune in place: ignored dirs (and their contents) are never visited.
         dirnames[:] = sorted(
             d
             for d in dirnames
             if not os.path.islink(os.path.join(dirpath, d)) and not flt.is_ignored(_join(rel_dir, d), is_dir=True)
         )
-        for name in filenames:
+        for name in sorted(filenames):
             rel = _join(rel_dir, name)
-            if not flt.is_ignored(rel, is_dir=False) and flt._file_ok(flt.root / rel):
-                found.append(flt.root / rel)
-    found.sort()
+            path = flt.root / rel
+            if not flt.is_ignored(rel, is_dir=False) and not path.is_symlink():
+                yield path
+
+
+def discover_files(root: str | Path, repo_filter: RepoFilter | None = None) -> list[Path]:
+    """Walk ``root`` and return every indexable file (absolute paths, sorted)."""
+    flt = repo_filter or RepoFilter.load(root)
+    found = sorted(p for p in iter_files(flt) if flt._file_ok(p))
     logger.info("Discovered indexable files", extra={"root": str(flt.root), "files": len(found)})
     return found

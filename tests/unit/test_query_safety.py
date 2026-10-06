@@ -1,5 +1,7 @@
 """Inputs that reach SQL or other parsers must be neutralised before they get there."""
 
+from pathlib import Path
+
 import pytest
 
 from kartrix.context.indexers.pg_index import split_identifiers
@@ -29,8 +31,11 @@ def test_split_identifiers() -> None:
     assert split_identifiers("HTTPServerError getX snake_case") == "error get http server x"
 
 
-def test_mcp_config_survives_windows_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_mcp_config_survives_windows_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # Regression: ${CWD} was substituted unescaped into JSON, so D:\... broke startup.
+    config = tmp_path / "mcp_servers.json"
+    config.write_text('{"mcp_servers": {"srv": {"command": "x", "args": ["${CWD}"]}}}')
+    monkeypatch.setattr("kartrix.mcp.mcp_config._CONFIG_PATH", config)
     monkeypatch.setenv("CWD", 'D:\\proj\\"quoted"\\new')
     servers = load_mcp_configs()
-    assert servers["filesystem"]["args"][-1] == 'D:\\proj\\"quoted"\\new'
+    assert servers["srv"]["args"][-1] == 'D:\\proj\\"quoted"\\new'

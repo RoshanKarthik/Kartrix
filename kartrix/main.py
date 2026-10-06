@@ -21,6 +21,7 @@ from kartrix.memory.session import (
 )
 from kartrix.memory.short_term import get_checkpointer
 from kartrix.observability.logger import get_logger
+from kartrix.security.workspace import set_workspace
 from kartrix.tasks.orchestrator import handle_plan_command
 from kartrix.tasks.status import show_task_status
 
@@ -46,6 +47,8 @@ async def initialize(checkpointer):
     console.print(f"[dim]Embedder: {settings.embeddings.provider} / {settings.embeddings.model}[/dim]")
 
     repo_path = str(Path.cwd())
+    workspace = set_workspace(repo_path)  # file tools may only touch this tree
+    console.print(f"[dim]Workspace: {workspace.root}[/dim]")
     await update_index()
 
     semantic_cache = await build_semantic_cache()
