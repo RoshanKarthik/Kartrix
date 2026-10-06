@@ -43,6 +43,12 @@ vector_store:
 qdrant:
   collection_name: kartrix
 
+database:                       # URL comes from DATABASE_URL in .env
+  pool_size: 5
+  max_overflow: 10
+  pool_timeout: 30
+  echo: false
+
 logging:
   level: INFO                   # level for kartrix.* loggers
   format: json                  # json | text

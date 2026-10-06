@@ -10,6 +10,8 @@ and verifies the results.
 
 ```bash
 uv sync
-cp .env.example .env   # add your keys
+cp .env.example .env   # add your keys and set the Postgres/Redis passwords
+docker compose up -d   # Postgres 17 + pgvector, Redis 8 (localhost only)
+uv run alembic upgrade head
 uv run kartrix         # run from inside the repository you want to work on
 ```

@@ -95,6 +95,14 @@ class QdrantSettings(_Section):
     collection_name: str = "kartrix"
 
 
+class DatabaseSettings(_Section):
+    # The connection URL (with password) comes from the DATABASE_URL env var, never from here.
+    pool_size: int = Field(5, gt=0)
+    max_overflow: int = Field(10, ge=0)
+    pool_timeout: float = Field(30.0, gt=0)
+    echo: bool = False  # log every SQL statement (debug only)
+
+
 class LoggingSettings(_Section):
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     format: Literal["json", "text"] = "json"
@@ -152,6 +160,7 @@ class Settings(BaseSettings):
     rag: RAGSettings = RAGSettings()
     vector_store: VectorStoreSettings = VectorStoreSettings()
     qdrant: QdrantSettings = QdrantSettings()
+    database: DatabaseSettings = DatabaseSettings()
     logging: LoggingSettings = LoggingSettings()
 
     @classmethod
