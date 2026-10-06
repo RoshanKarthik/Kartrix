@@ -4,9 +4,8 @@ import json
 from pydantic import BaseModel
 
 from langchain.agents import create_agent
-from langchain.chat_models import init_chat_model
 
-from kartrix.config import settings
+from kartrix.llm.factory import get_chat_model, get_model_middleware
 from kartrix.tools.filesystem_tools import (
     append_file,
     file_exists,
@@ -112,15 +111,13 @@ async def _judge_task(task: dict, agent_output: str) -> _JudgeVerdict:
     Lightweight LLM-as-judge. Uses judge_model (cheaper) from config.
     Returns a structured verdict with passed/score/reason.
     """
-    provider    = settings.llm.provider
-    judge_model = settings.llm.effective_judge_model
-
-    llm = init_chat_model(f"{provider}:{judge_model}", temperature=0, max_tokens=1000)
+    llm = get_chat_model("judge", temperature=0, max_tokens=1000)
     judge_agent = create_agent(
         llm,
         tools=[],
         system_prompt=_JUDGE_SYSTEM_PROMPT,
         response_format=_JudgeVerdict,
+        middleware=get_model_middleware(temperature=0, max_tokens=1000),
     )
 
     criteria = _parse_json_field(task.get("acceptance_criteria"))
@@ -147,17 +144,17 @@ async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None) -
     acceptance_criteria. If it fails (score < 6), raises ValueError so
     the orchestrator's existing retry logic kicks in automatically.
     """
-    provider = settings.llm.provider
-    model    = settings.llm.model
-
-    llm = init_chat_model(f"{provider}:{model}", temperature=0, max_tokens=3000)
+    llm = get_chat_model("main", temperature=0, max_tokens=3000)
 
     tools         = _TOOLS_BY_TYPE.get(task.get("task_type", ""), _DEFAULT_TOOLS)
     system_prompt = _build_system_prompt(task, dep_outputs or [])
 
     logger.info(f"Building agent for task {task['id']} (type={task['task_type']}, tools={[t.name for t in tools]})")
 
-    agent = create_agent(llm, tools=tools, system_prompt=system_prompt)
+    agent = create_agent(
+        llm, tools=tools, system_prompt=system_prompt,
+        middleware=get_model_middleware(temperature=0, max_tokens=3000),
+    )
 
     # The project directory may be empty on first run — tell the agent to create files
     # directly rather than spending turns exploring an empty directory.

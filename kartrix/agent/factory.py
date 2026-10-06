@@ -1,6 +1,6 @@
 from langchain.agents import create_agent
 
-from kartrix.llm.factory import get_llm
+from kartrix.llm.factory import get_llm, get_model_middleware
 from kartrix.agent.tools import search_codebase
 from kartrix.observability.logger import get_logger
 from kartrix.tools.terminal_tools import run_command, run_in_directory
@@ -37,4 +37,5 @@ async def build_agent(checkpointer):
        tools=tools,
        system_prompt=full_prompt,
        checkpointer=checkpointer,
+       middleware=get_model_middleware(),
    )

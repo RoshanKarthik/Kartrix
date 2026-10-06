@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 from langchain.agents import create_agent
-from langchain.chat_models import init_chat_model
 
-from kartrix.config import settings
+from kartrix.llm.factory import get_chat_model, get_model_middleware
 from kartrix.tasks.task_store import TaskType
 from kartrix.observability.logger import get_logger
 
@@ -49,16 +48,14 @@ Rules:
 
 def create_plan(goal: str, extra_context: str = "") -> ExecutionPlan:
     """Call the LLM planner and return a structured ExecutionPlan."""
-    provider = settings.llm.provider
-    model    = settings.llm.model
-
-    llm = init_chat_model(f"{provider}:{model}", temperature=0)
+    llm = get_chat_model("main", temperature=0)
 
     planner_agent = create_agent(
         llm,
         tools=[],
         system_prompt=_SYSTEM_PROMPT,
         response_format=ExecutionPlan,
+        middleware=get_model_middleware(temperature=0),
     )
 
     user_message = f"Goal: {goal}"

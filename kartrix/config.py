@@ -40,10 +40,22 @@ class _Section(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class RetrySettings(_Section):
+    """Exponential backoff with jitter for transient errors (timeouts, 429, 5xx)."""
+
+    max_retries: int = Field(2, ge=0, le=10)
+    initial_delay: float = Field(1.0, gt=0)
+    backoff_factor: float = Field(2.0, ge=1.0)
+    max_delay: float = Field(30.0, gt=0)
+
+
 class EmbeddingsSettings(_Section):
-    provider: Literal["openai", "huggingface"] = "openai"
-    model: str = "text-embedding-3-small"
-    dims: int = Field(1536, gt=0)
+    # No fallback provider on purpose: vectors from different models are not comparable.
+    provider: Literal["nvidia", "openai", "huggingface"] = "nvidia"
+    model: str = "nvidia/nemotron-3-embed-1b"
+    dims: int = Field(2048, gt=0)
+    timeout: float = Field(60.0, gt=0)
+    retry: RetrySettings = RetrySettings()
 
 
 class SemanticCacheSettings(_Section):
@@ -57,10 +69,25 @@ class TasksSettings(_Section):
     db_path: str = ".kartrix/tasks.db"
 
 
+LLMProvider = Literal["nvidia", "huggingface", "openai", "anthropic"]
+
+
+class LLMModelRef(_Section):
+    provider: LLMProvider
+    model: str
+
+
 class LLMSettings(_Section):
-    provider: Literal["openai", "anthropic"] = "openai"
-    model: str = "gpt-5.5"
+    provider: LLMProvider = "nvidia"
+    model: str = "nvidia/nemotron-3-super-120b-a12b"
     judge_model: str | None = None  # cheaper model for LLM-as-judge; falls back to `model`
+    timeout: float = Field(90.0, gt=0)  # per request; free-tier models can hang
+    retry: RetrySettings = RetrySettings()
+    # Tried in order when the primary still fails after its retries; [] disables fallback.
+    fallbacks: list[LLMModelRef] = Field(default_factory=lambda: [
+        LLMModelRef(provider="nvidia", model="google/gemma-4-31b-it"),
+        LLMModelRef(provider="huggingface", model="Qwen/Qwen3-Coder-30B-A3B-Instruct"),
+    ])
 
     @property
     def effective_judge_model(self) -> str:

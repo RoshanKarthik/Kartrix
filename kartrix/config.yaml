@@ -3,9 +3,12 @@
 # Secrets (API keys, passwords) never go here — put them in .env.
 
 embeddings:
-  provider: openai              # openai | huggingface
-  model: text-embedding-3-small
-  dims: 1536
+  provider: nvidia              # nvidia | openai | huggingface (no fallback: vectors must stay comparable)
+  model: nvidia/nemotron-3-embed-1b
+  dims: 2048                    # must match the model's output size
+  timeout: 60
+  retry:
+    max_retries: 3
 
 semantic_cache:
   enabled: true
@@ -17,9 +20,20 @@ tasks:
   db_path: .kartrix/tasks.db
 
 llm:
-  provider: openai              # openai | anthropic
-  model: gpt-5.5
-  judge_model: gpt-4o-mini      # cheaper model used only for LLM-as-judge
+  provider: nvidia              # nvidia | huggingface | openai | anthropic
+  model: nvidia/nemotron-3-super-120b-a12b
+  judge_model: openai/gpt-oss-20b   # cheaper model used only for LLM-as-judge
+  timeout: 90                   # seconds per request
+  retry:                        # transient errors only (timeouts, 429, 5xx)
+    max_retries: 2
+    initial_delay: 1.0
+    backoff_factor: 2.0
+    max_delay: 30
+  fallbacks:                    # tried in order when the primary still fails after retries; [] = none
+    - provider: nvidia          # different NIM model: free, separate capacity
+      model: google/gemma-4-31b-it
+    - provider: huggingface     # via the OpenAI-compatible HF router (monthly free credits)
+      model: Qwen/Qwen3-Coder-30B-A3B-Instruct
 
 skills:
   skills_dir: .kartrix/skills
