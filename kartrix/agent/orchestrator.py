@@ -34,9 +34,7 @@ async def handle_query(
 
     agent_config = {"configurable": {"thread_id": thread_id}}
     try:
-        response = await agent.ainvoke(
-            {"messages": [{"role": "user", "content": question}]}, agent_config
-        )
+        response = await agent.ainvoke({"messages": [{"role": "user", "content": question}]}, agent_config)
         answer = response["messages"][-1].content
     except Exception as e:
         logger.error(f"Agent error: {e}")

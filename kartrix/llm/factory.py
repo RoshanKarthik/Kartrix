@@ -55,8 +55,12 @@ def _build_chat_model(provider: str, model: str, **kwargs: Any) -> BaseChatModel
 
         # Retries are handled by our middleware, so the SDK's own retries are off.
         return ChatOpenAI(
-            model=model, base_url=HF_ROUTER_URL, api_key=_require_env("HF_TOKEN"),
-            timeout=timeout, max_retries=0, **kwargs,
+            model=model,
+            base_url=HF_ROUTER_URL,
+            api_key=_require_env("HF_TOKEN"),
+            timeout=timeout,
+            max_retries=0,
+            **kwargs,
         )
     if provider == "openai":
         from langchain_openai import ChatOpenAI
@@ -121,7 +125,9 @@ def get_embedder() -> Embeddings:
         from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
 
         # truncate=END: over-long chunks are cut instead of failing the whole batch.
-        inner = NVIDIAEmbeddings(model=cfg.model, api_key=_require_env("NVIDIA_API_KEY"), truncate="END", timeout=cfg.timeout)
+        inner = NVIDIAEmbeddings(
+            model=cfg.model, api_key=_require_env("NVIDIA_API_KEY"), truncate="END", timeout=cfg.timeout
+        )
     elif cfg.provider == "huggingface":
         from langchain_huggingface import HuggingFaceEmbeddings
 

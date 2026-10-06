@@ -76,9 +76,7 @@ class SemanticCache:
         self.embedder = get_embedder()
         self.threshold = threshold
         self.prefix = f"{namespace}:cache:"
-        self.index = AsyncSearchIndex.from_dict(
-            _build_index_schema(dims, namespace), redis_client=self.client
-        )
+        self.index = AsyncSearchIndex.from_dict(_build_index_schema(dims, namespace), redis_client=self.client)
 
     async def aclose(self) -> None:
         await self.client.aclose()

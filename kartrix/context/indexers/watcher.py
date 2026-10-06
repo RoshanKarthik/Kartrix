@@ -68,8 +68,9 @@ class _CodebaseEventHandler(FileSystemEventHandler):
       _DEBOUNCE_SECONDS.
     """
 
-    def __init__(self, repo_path: str, loop: asyncio.AbstractEventLoop,
-                 on_change: Callable[[], Awaitable[None]] | None = None) -> None:
+    def __init__(
+        self, repo_path: str, loop: asyncio.AbstractEventLoop, on_change: Callable[[], Awaitable[None]] | None = None
+    ) -> None:
         self._root = repo_path
         self._loop = loop
         self._on_change = on_change
@@ -147,8 +148,9 @@ class _CodebaseEventHandler(FileSystemEventHandler):
             self._handle(event.dest_path)
 
 
-def start_watcher(repo_path: str, loop: asyncio.AbstractEventLoop,
-                  on_change: Callable[[], Awaitable[None]] | None = None) -> Observer:
+def start_watcher(
+    repo_path: str, loop: asyncio.AbstractEventLoop, on_change: Callable[[], Awaitable[None]] | None = None
+) -> Observer:
     """
     Start a filesystem observer on repo_path in a background daemon thread.
 
@@ -162,7 +164,7 @@ def start_watcher(repo_path: str, loop: asyncio.AbstractEventLoop,
 
     Returns the Observer so the caller can call stop_watcher() on shutdown.
     """
-    handler  = _CodebaseEventHandler(repo_path, loop, on_change=on_change)
+    handler = _CodebaseEventHandler(repo_path, loop, on_change=on_change)
     observer = _get_observer()
     observer.schedule(handler, repo_path, recursive=True)
     observer.daemon = True

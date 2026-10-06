@@ -11,14 +11,14 @@ logger = get_logger(__name__)
 
 
 class PlannedTask(BaseModel):
-    id: str                          # stable snake_case e.g. task_001
+    id: str  # stable snake_case e.g. task_001
     title: str
     description: str
     task_type: TaskType
-    depends_on: list[str]            # list of task IDs that must complete first
+    depends_on: list[str]  # list of task IDs that must complete first
     estimated_minutes: int
-    output_files: list[str]          # files this task will create/modify
-    acceptance_criteria: list[str]   # what "done" looks like for the judge
+    output_files: list[str]  # files this task will create/modify
+    acceptance_criteria: list[str]  # what "done" looks like for the judge
 
 
 class ExecutionPlan(BaseModel):

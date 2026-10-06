@@ -81,10 +81,12 @@ class LLMSettings(_Section):
     timeout: float = Field(90.0, gt=0)  # per request; free-tier models can hang
     retry: RetrySettings = RetrySettings()
     # Tried in order when the primary still fails after its retries; [] disables fallback.
-    fallbacks: list[LLMModelRef] = Field(default_factory=lambda: [
-        LLMModelRef(provider="nvidia", model="google/gemma-4-31b-it"),
-        LLMModelRef(provider="huggingface", model="Qwen/Qwen3-Coder-30B-A3B-Instruct"),
-    ])
+    fallbacks: list[LLMModelRef] = Field(
+        default_factory=lambda: [
+            LLMModelRef(provider="nvidia", model="google/gemma-4-31b-it"),
+            LLMModelRef(provider="huggingface", model="Qwen/Qwen3-Coder-30B-A3B-Instruct"),
+        ]
+    )
 
     @property
     def effective_judge_model(self) -> str:
@@ -102,20 +104,34 @@ class MemorySettings(_Section):
 
 
 class IndexSettings(_Section):
-    max_file_kb: int = Field(512, gt=0)          # bigger files are skipped (generated/minified code)
-    embed_batch_size: int = Field(32, gt=0)      # chunks per embeddings request
+    max_file_kb: int = Field(512, gt=0)  # bigger files are skipped (generated/minified code)
+    embed_batch_size: int = Field(32, gt=0)  # chunks per embeddings request
     # gitignore-style patterns always skipped, on top of the repo's own .gitignore files.
-    exclude: list[str] = Field(default_factory=lambda: [
-        ".git/", ".kartrix/", ".venv/", "venv/", "node_modules/", "__pycache__/",
-        ".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa*", "id_ed25519*",
-    ])
+    exclude: list[str] = Field(
+        default_factory=lambda: [
+            ".git/",
+            ".kartrix/",
+            ".venv/",
+            "venv/",
+            "node_modules/",
+            "__pycache__/",
+            ".env",
+            ".env.*",
+            "*.pem",
+            "*.key",
+            "*.p12",
+            "*.pfx",
+            "id_rsa*",
+            "id_ed25519*",
+        ]
+    )
 
 
 class RetrievalSettings(_Section):
     mode: Literal["hybrid", "dense", "sparse"] = "hybrid"  # hybrid = pgvector + full-text, fused with RRF
     top_k: int = Field(5, gt=0)
-    candidates: int = Field(40, gt=0)            # results taken from each retriever before fusion
-    rrf_k: int = Field(60, gt=0)                 # reciprocal-rank-fusion constant
+    candidates: int = Field(40, gt=0)  # results taken from each retriever before fusion
+    rrf_k: int = Field(60, gt=0)  # reciprocal-rank-fusion constant
 
 
 class DatabaseSettings(_Section):
@@ -143,8 +159,7 @@ class _UniqueKeyLoader(yaml.SafeLoader):
             key = self.construct_object(key_node, deep=deep)
             if key in seen:
                 raise ConfigError(
-                    f"Duplicate key {key!r} at line {key_node.start_mark.line + 1} "
-                    f"of {key_node.start_mark.name}"
+                    f"Duplicate key {key!r} at line {key_node.start_mark.line + 1} of {key_node.start_mark.name}"
                 )
             seen.add(key)
         return super().construct_mapping(node, deep=deep)

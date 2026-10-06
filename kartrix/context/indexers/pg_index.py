@@ -66,8 +66,10 @@ class IndexStats:
     chunks: int = 0
 
     def __str__(self) -> str:
-        return (f"added {self.added}, changed {self.changed}, deleted {self.deleted}, "
-                f"unchanged {self.unchanged}, empty {self.empty} - {self.chunks} chunks embedded")
+        return (
+            f"added {self.added}, changed {self.changed}, deleted {self.deleted}, "
+            f"unchanged {self.unchanged}, empty {self.empty} - {self.chunks} chunks embedded"
+        )
 
 
 @dataclass
@@ -90,8 +92,12 @@ def split_identifiers(text: str) -> str:
 
     Postgres already splits snake_case on ``_``; ``parseConfigFile`` would otherwise be one token.
     """
-    words = {part.lower() for ident in set(_IDENT.findall(text)) for part in _CAMEL.split(ident)
-             if part and part.lower() != ident.lower()}
+    words = {
+        part.lower()
+        for ident in set(_IDENT.findall(text))
+        for part in _CAMEL.split(ident)
+        if part and part.lower() != ident.lower()
+    }
     return " ".join(sorted(words))
 
 
@@ -134,27 +140,49 @@ async def _write_group(root_key: str, group: list[_Prepared], model: str) -> int
         batch = settings.index.embed_batch_size
         texts = [_embed_text(p.rel, c) for p, c in pairs]
         for i in range(0, len(texts), batch):
-            vectors += await embedder.aembed_documents(texts[i:i + batch])
+            vectors += await embedder.aembed_documents(texts[i : i + batch])
 
     async with session_scope() as s:
-        await s.execute(delete(CodeFile).where(
-            CodeFile.repo_root == root_key, CodeFile.path.in_([p.rel for p in group])))
+        await s.execute(
+            delete(CodeFile).where(CodeFile.repo_root == root_key, CodeFile.path.in_([p.rel for p in group]))
+        )
         file_ids = {}
         for p in group:
-            file_ids[p.rel] = (await s.execute(insert(CodeFile).values(
-                repo_root=root_key, path=p.rel, sha256=p.sha256, size=p.size, mtime_ns=p.mtime_ns,
-                embedding_model=model, chunker_version=CHUNKER_VERSION, chunk_count=len(p.chunks),
-            ).returning(CodeFile.id))).scalar_one()
+            file_ids[p.rel] = (
+                await s.execute(
+                    insert(CodeFile)
+                    .values(
+                        repo_root=root_key,
+                        path=p.rel,
+                        sha256=p.sha256,
+                        size=p.size,
+                        mtime_ns=p.mtime_ns,
+                        embedding_model=model,
+                        chunker_version=CHUNKER_VERSION,
+                        chunk_count=len(p.chunks),
+                    )
+                    .returning(CodeFile.id)
+                )
+            ).scalar_one()
         for (p, c), vec in zip(pairs, vectors, strict=True):
             header = f"{c.name} {p.rel.replace('/', ' ').replace('.', ' ')}"
             body = f"{c.content}\n{split_identifiers(c.content)}"
             tsv = func.setweight(func.to_tsvector(_TS_CONFIG, cast(header, Text)), _WEIGHT_A).op("||")(
-                func.setweight(func.to_tsvector(_TS_CONFIG, cast(body, Text)), _WEIGHT_B))
-            await s.execute(insert(CodeChunk).values(
-                file_id=file_ids[p.rel], repo_root=root_key, name=c.name, kind=c.type,
-                start_line=c.start_line, end_line=c.end_line, content=c.content.replace("\x00", ""),
-                embedding=vec, tsv=tsv,
-            ))
+                func.setweight(func.to_tsvector(_TS_CONFIG, cast(body, Text)), _WEIGHT_B)
+            )
+            await s.execute(
+                insert(CodeChunk).values(
+                    file_id=file_ids[p.rel],
+                    repo_root=root_key,
+                    name=c.name,
+                    kind=c.type,
+                    start_line=c.start_line,
+                    end_line=c.end_line,
+                    content=c.content.replace("\x00", ""),
+                    embedding=vec,
+                    tsv=tsv,
+                )
+            )
     return len(pairs)
 
 
@@ -162,11 +190,18 @@ async def _index(root: Path, rels: list[str], stats: IndexStats, *, prune: bool)
     root_key = str(root)
     model = settings.embeddings.model
     async with session_scope() as s:
-        rows = (await s.execute(
-            select(CodeFile.path, CodeFile.sha256, CodeFile.size, CodeFile.mtime_ns,
-                   CodeFile.embedding_model, CodeFile.chunker_version)
-            .where(CodeFile.repo_root == root_key)
-        )).all()
+        rows = (
+            await s.execute(
+                select(
+                    CodeFile.path,
+                    CodeFile.sha256,
+                    CodeFile.size,
+                    CodeFile.mtime_ns,
+                    CodeFile.embedding_model,
+                    CodeFile.chunker_version,
+                ).where(CodeFile.repo_root == root_key)
+            )
+        ).all()
     known = {r.path: r for r in rows}
 
     if prune:
@@ -192,8 +227,11 @@ async def _index(root: Path, rels: list[str], stats: IndexStats, *, prune: bool)
             continue
         if prep is None:  # touched but identical content: just remember the new mtime
             async with session_scope() as s:
-                await s.execute(update(CodeFile).where(CodeFile.repo_root == root_key, CodeFile.path == rel)
-                                .values(mtime_ns=st.st_mtime_ns))
+                await s.execute(
+                    update(CodeFile)
+                    .where(CodeFile.repo_root == root_key, CodeFile.path == rel)
+                    .values(mtime_ns=st.st_mtime_ns)
+                )
             stats.unchanged += 1
             continue
         if prep.is_new:
@@ -257,13 +295,18 @@ async def show_index(repo_root: str | Path, limit: int = 30) -> None:
     console = Console()
     root_key = repo_key(repo_root)
     async with session_scope() as s:
-        files = (await s.execute(
-            select(CodeFile.path, CodeFile.chunk_count, CodeFile.indexed_at)
-            .where(CodeFile.repo_root == root_key).order_by(CodeFile.path)
-        )).all()
+        files = (
+            await s.execute(
+                select(CodeFile.path, CodeFile.chunk_count, CodeFile.indexed_at)
+                .where(CodeFile.repo_root == root_key)
+                .order_by(CodeFile.path)
+            )
+        ).all()
     total = sum(f.chunk_count for f in files)
-    console.print(f"\n[bold]Code index — {len(files)} files, {total} chunks[/bold] "
-                  f"[dim]({settings.embeddings.model}, halfvec({EMBEDDING_DIMS}))[/dim]\n")
+    console.print(
+        f"\n[bold]Code index — {len(files)} files, {total} chunks[/bold] "
+        f"[dim]({settings.embeddings.model}, halfvec({EMBEDDING_DIMS}))[/dim]\n"
+    )
     table = Table("File", "Chunks", "Indexed at")
     for f in files[:limit]:
         table.add_row(f.path, str(f.chunk_count), f.indexed_at.strftime("%Y-%m-%d %H:%M"))

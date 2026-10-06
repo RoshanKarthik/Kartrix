@@ -124,9 +124,7 @@ class Project(Base):
     __tablename__ = "projects"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    session_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("sessions.id", ondelete="SET NULL"), index=True
-    )
+    session_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sessions.id", ondelete="SET NULL"), index=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     goal: Mapped[str] = mapped_column(Text, nullable=False)
     repo_path: Mapped[str] = mapped_column(Text, nullable=False)
@@ -297,9 +295,7 @@ class Checkpoint(Base):
     """
 
     __tablename__ = "checkpoints"
-    __table_args__ = (
-        PrimaryKeyConstraint("thread_id", "checkpoint_ns", "checkpoint_id", name="pk_checkpoints"),
-    )
+    __table_args__ = (PrimaryKeyConstraint("thread_id", "checkpoint_ns", "checkpoint_id", name="pk_checkpoints"),)
 
     thread_id: Mapped[str] = mapped_column(Text, nullable=False)
     checkpoint_ns: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
@@ -307,9 +303,7 @@ class Checkpoint(Base):
     parent_checkpoint_id: Mapped[str | None] = mapped_column(Text)
     type: Mapped[str | None] = mapped_column(Text)
     checkpoint: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
-    metadata_: Mapped[dict[str, Any]] = mapped_column(
-        "metadata", nullable=False, server_default=text("'{}'::jsonb")
-    )
+    metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", nullable=False, server_default=text("'{}'::jsonb"))
     created_at: Mapped[datetime] = _created_at()
 
 

@@ -19,10 +19,10 @@ _RESUMABLE = (ProjectStatus.APPROVED, ProjectStatus.RUNNING)
 
 
 class TaskType(enum.StrEnum):
-    DESIGN    = "design"
+    DESIGN = "design"
     IMPLEMENT = "implement"
-    TEST      = "test"
-    REVIEW    = "review"
+    TEST = "test"
+    REVIEW = "review"
     INTEGRATE = "integrate"
     CONFIGURE = "configure"
 
@@ -106,20 +106,27 @@ class TaskStore:
     async def get_resumable_project(self, repo_path: str) -> str | None:
         """Most recent approved/running project for this repo, or None."""
         async with session_scope() as s:
-            pid = (await s.execute(
-                select(Project.id)
-                .where(Project.repo_path == repo_path, Project.status.in_(_RESUMABLE))
-                .order_by(Project.created_at.desc()).limit(1)
-            )).scalar_one_or_none()
+            pid = (
+                await s.execute(
+                    select(Project.id)
+                    .where(Project.repo_path == repo_path, Project.status.in_(_RESUMABLE))
+                    .order_by(Project.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
         return str(pid) if pid else None
 
     async def get_latest_project(self, repo_path: str) -> str | None:
         """Most recent project for this repo in any state (for /task_status)."""
         async with session_scope() as s:
-            pid = (await s.execute(
-                select(Project.id).where(Project.repo_path == repo_path)
-                .order_by(Project.created_at.desc()).limit(1)
-            )).scalar_one_or_none()
+            pid = (
+                await s.execute(
+                    select(Project.id)
+                    .where(Project.repo_path == repo_path)
+                    .order_by(Project.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
         return str(pid) if pid else None
 
     async def set_project_status(self, project_id: str, status: ProjectStatus) -> None:
@@ -135,8 +142,7 @@ class TaskStore:
         async with session_scope() as s:
             res = await s.execute(
                 update(Task)
-                .where(Task.project_id == uuid.UUID(project_id), Task.key == key,
-                       Task.status == TaskStatus.PENDING)
+                .where(Task.project_id == uuid.UUID(project_id), Task.key == key, Task.status == TaskStatus.PENDING)
                 .values(status=TaskStatus.IN_PROGRESS, started_at=func.now())
             )
         return res.rowcount == 1
@@ -183,25 +189,27 @@ class TaskStore:
         affected tasks with their new status.
         """
         async with session_scope() as s:
-            rows = (await s.execute(
-                update(Task)
-                .where(Task.project_id == uuid.UUID(project_id), Task.status == TaskStatus.IN_PROGRESS)
-                .values(
-                    status=case(
-                        (Task.retry_count < Task.max_retries, TaskStatus.PENDING.value),
-                        else_=TaskStatus.FAILED.value,
-                    ),
-                    retry_count=case(
-                        (Task.retry_count < Task.max_retries, Task.retry_count + 1), else_=Task.retry_count
-                    ),
-                    error=case(
-                        (Task.retry_count < Task.max_retries, "CRASH: process died mid-execution"),
-                        else_="CRASH: max retries exceeded after repeated crashes",
-                    ),
-                    started_at=None,
+            rows = (
+                await s.execute(
+                    update(Task)
+                    .where(Task.project_id == uuid.UUID(project_id), Task.status == TaskStatus.IN_PROGRESS)
+                    .values(
+                        status=case(
+                            (Task.retry_count < Task.max_retries, TaskStatus.PENDING.value),
+                            else_=TaskStatus.FAILED.value,
+                        ),
+                        retry_count=case(
+                            (Task.retry_count < Task.max_retries, Task.retry_count + 1), else_=Task.retry_count
+                        ),
+                        error=case(
+                            (Task.retry_count < Task.max_retries, "CRASH: process died mid-execution"),
+                            else_="CRASH: max retries exceeded after repeated crashes",
+                        ),
+                        started_at=None,
+                    )
+                    .returning(Task.key, Task.title, Task.status, Task.retry_count, Task.max_retries)
                 )
-                .returning(Task.key, Task.title, Task.status, Task.retry_count, Task.max_retries)
-            )).all()
+            ).all()
         return [r._asdict() for r in rows]
 
     # ------------------------------------------------------------------
@@ -210,31 +218,54 @@ class TaskStore:
 
     async def get_ready_tasks(self, project_id: str) -> list[dict[str, Any]]:
         """PENDING tasks of the project whose every dependency is COMPLETED or SKIPPED."""
-        dep = select(literal_column("1")).select_from(Task.__table__.alias("d")).where(text(
-            "d.project_id = tasks.project_id AND jsonb_exists(tasks.depends_on, d.key) "
-            "AND d.status NOT IN ('completed', 'skipped')"
-        ))
+        dep = (
+            select(literal_column("1"))
+            .select_from(Task.__table__.alias("d"))
+            .where(
+                text(
+                    "d.project_id = tasks.project_id AND jsonb_exists(tasks.depends_on, d.key) "
+                    "AND d.status NOT IN ('completed', 'skipped')"
+                )
+            )
+        )
         async with session_scope() as s:
-            rows = (await s.execute(
-                select(Task)
-                .where(Task.project_id == uuid.UUID(project_id), Task.status == TaskStatus.PENDING, ~dep.exists())
-                .order_by(Task.execution_order)
-            )).scalars().all()
+            rows = (
+                (
+                    await s.execute(
+                        select(Task)
+                        .where(
+                            Task.project_id == uuid.UUID(project_id), Task.status == TaskStatus.PENDING, ~dep.exists()
+                        )
+                        .order_by(Task.execution_order)
+                    )
+                )
+                .scalars()
+                .all()
+            )
         return [_task_dict(t) for t in rows]
 
     async def get_all_tasks(self, project_id: str) -> list[dict[str, Any]]:
         async with session_scope() as s:
-            rows = (await s.execute(
-                select(Task).where(Task.project_id == uuid.UUID(project_id)).order_by(Task.execution_order)
-            )).scalars().all()
+            rows = (
+                (
+                    await s.execute(
+                        select(Task).where(Task.project_id == uuid.UUID(project_id)).order_by(Task.execution_order)
+                    )
+                )
+                .scalars()
+                .all()
+            )
         return [_task_dict(t) for t in rows]
 
     async def get_progress(self, project_id: str) -> dict[str, int]:
         async with session_scope() as s:
-            rows = (await s.execute(
-                select(Task.status, func.count()).where(Task.project_id == uuid.UUID(project_id))
-                .group_by(Task.status)
-            )).all()
+            rows = (
+                await s.execute(
+                    select(Task.status, func.count())
+                    .where(Task.project_id == uuid.UUID(project_id))
+                    .group_by(Task.status)
+                )
+            ).all()
         return {status.value: n for status, n in rows}
 
     async def get_dep_results(self, project_id: str, dep_keys: list[str]) -> list[dict[str, Any]]:
@@ -242,9 +273,13 @@ class TaskStore:
         if not dep_keys:
             return []
         async with session_scope() as s:
-            rows = (await s.execute(
-                select(Task.key, Task.title, Task.result)
-                .where(Task.project_id == uuid.UUID(project_id), Task.key.in_(dep_keys),
-                       Task.status == TaskStatus.COMPLETED)
-            )).all()
+            rows = (
+                await s.execute(
+                    select(Task.key, Task.title, Task.result).where(
+                        Task.project_id == uuid.UUID(project_id),
+                        Task.key.in_(dep_keys),
+                        Task.status == TaskStatus.COMPLETED,
+                    )
+                )
+            ).all()
         return [{"id": r.key, "title": r.title, "result": r.result} for r in rows]

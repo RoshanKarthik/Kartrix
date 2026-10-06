@@ -22,11 +22,21 @@ TRANSIENT_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 # langchain-nvidia-ai-endpoints raises bare Exception("[429] Too Many Requests\n...").
 _STATUS_PREFIX = re.compile(r"^\s*\[(\d{3})\]")
 
-_TRANSIENT_NAMES = frozenset({
-    "TimeoutError", "Timeout", "ReadTimeout", "ConnectTimeout", "ServerTimeoutError",
-    "ConnectionError", "ClientConnectionError", "ServerDisconnectedError",
-    "APITimeoutError", "APIConnectionError", "RemoteProtocolError",
-})
+_TRANSIENT_NAMES = frozenset(
+    {
+        "TimeoutError",
+        "Timeout",
+        "ReadTimeout",
+        "ConnectTimeout",
+        "ServerTimeoutError",
+        "ConnectionError",
+        "ClientConnectionError",
+        "ServerDisconnectedError",
+        "APITimeoutError",
+        "APIConnectionError",
+        "RemoteProtocolError",
+    }
+)
 
 
 def status_code_of(exc: BaseException) -> int | None:
@@ -62,7 +72,12 @@ def should_retry_model_call(exc: Exception) -> bool:
     transient = is_transient(exc) and not is_timeout(exc)
     logger.warning(
         "Model call failed",
-        extra={"error_type": type(exc).__name__, "status": status_code_of(exc), "will_retry": transient, "error": str(exc)[:200]},
+        extra={
+            "error_type": type(exc).__name__,
+            "status": status_code_of(exc),
+            "will_retry": transient,
+            "error": str(exc)[:200],
+        },
     )
     return transient
 
@@ -81,7 +96,10 @@ def call_with_retry(fn: Callable[[], T], policy: RetrySettings, what: str) -> T:
             if attempt >= policy.max_retries or not is_transient(exc):
                 raise
             delay = backoff_delay(attempt, policy)
-            logger.warning("Transient error, retrying", extra={"call": what, "attempt": attempt + 1, "delay_s": round(delay, 2), "error": str(exc)[:200]})
+            logger.warning(
+                "Transient error, retrying",
+                extra={"call": what, "attempt": attempt + 1, "delay_s": round(delay, 2), "error": str(exc)[:200]},
+            )
             time.sleep(delay)
     raise AssertionError("unreachable")
 
@@ -94,7 +112,10 @@ async def acall_with_retry(fn: Callable[[], Awaitable[T]], policy: RetrySettings
             if attempt >= policy.max_retries or not is_transient(exc):
                 raise
             delay = backoff_delay(attempt, policy)
-            logger.warning("Transient error, retrying", extra={"call": what, "attempt": attempt + 1, "delay_s": round(delay, 2), "error": str(exc)[:200]})
+            logger.warning(
+                "Transient error, retrying",
+                extra={"call": what, "attempt": attempt + 1, "delay_s": round(delay, 2), "error": str(exc)[:200]},
+            )
             await asyncio.sleep(delay)
     raise AssertionError("unreachable")
 

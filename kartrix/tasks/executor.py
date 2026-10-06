@@ -21,10 +21,10 @@ logger = get_logger(__name__)
 
 # Each task type gets a minimal, focused toolset — least privilege per task.
 _TOOLS_BY_TYPE: dict[str, list] = {
-    "design":    [read_file, write_file, list_directory],
+    "design": [read_file, write_file, list_directory],
     "implement": [read_file, write_file, append_file, list_directory],
-    "test":      [read_file, write_file, append_file, list_directory, run_command],
-    "review":    [read_file, write_file],
+    "test": [read_file, write_file, append_file, list_directory, run_command],
+    "review": [read_file, write_file],
     "integrate": [read_file, write_file, append_file, list_directory, run_command],
     "configure": [read_file, write_file, list_directory, file_exists],
 }
@@ -49,36 +49,29 @@ def _build_system_prompt(task: dict, dep_outputs: list[dict]) -> str:
     "PRIOR TASK OUTPUTS" so the agent has memory of what was already built,
     without needing a shared checkpointer across tasks.
     """
-    criteria_lines = "\n".join(
-        f"  - {c}" for c in _parse_json_field(task.get("acceptance_criteria"))
-    )
-    output_files = "\n".join(
-        f"  - {f}" for f in _parse_json_field(task.get("output_files"))
-    )
+    criteria_lines = "\n".join(f"  - {c}" for c in _parse_json_field(task.get("acceptance_criteria")))
+    output_files = "\n".join(f"  - {f}" for f in _parse_json_field(task.get("output_files")))
 
     prior_context = ""
     if dep_outputs:
-        parts = [
-            f"[{dep['id']}] {dep['title']}\n{dep['result'] or '(no output recorded)'}"
-            for dep in dep_outputs
-        ]
+        parts = [f"[{dep['id']}] {dep['title']}\n{dep['result'] or '(no output recorded)'}" for dep in dep_outputs]
         prior_context = "\n\nPRIOR TASK OUTPUTS (from your dependencies):\n" + "\n\n".join(parts)
 
     return f"""You are an expert software engineer executing a single well-defined task.
 Be thorough and complete. Always write all files to disk before finishing.
 
-TASK ID:   {task['id']}
-TASK TYPE: {task['task_type']}
-TITLE:     {task['title']}
+TASK ID:   {task["id"]}
+TASK TYPE: {task["task_type"]}
+TITLE:     {task["title"]}
 
 DESCRIPTION:
-{task['description']}
+{task["description"]}
 
 FILES TO PRODUCE:
-{output_files or '  (none specified)'}
+{output_files or "  (none specified)"}
 
 ACCEPTANCE CRITERIA (your output must satisfy ALL of these):
-{criteria_lines or '  (none specified)'}{prior_context}
+{criteria_lines or "  (none specified)"}{prior_context}
 
 When done, summarise what you implemented in 3-5 bullet points.
 Do NOT leave any implementation incomplete."""
@@ -88,10 +81,11 @@ Do NOT leave any implementation incomplete."""
 # LLM-as-judge
 # ------------------------------------------------------------------
 
+
 class _JudgeVerdict(BaseModel):
     passed: bool
-    score: int    # 0-10
-    reason: str   # one sentence
+    score: int  # 0-10
+    reason: str  # one sentence
 
 
 _JUDGE_SYSTEM_PROMPT = """\
@@ -121,8 +115,8 @@ async def _judge_task(task: dict, agent_output: str) -> _JudgeVerdict:
     )
 
     criteria = _parse_json_field(task.get("acceptance_criteria"))
-    user_message = f"""TASK: {task['title']}
-DESCRIPTION: {task['description']}
+    user_message = f"""TASK: {task["title"]}
+DESCRIPTION: {task["description"]}
 ACCEPTANCE CRITERIA: {json.dumps(criteria, indent=2)}
 
 AGENT OUTPUT:
@@ -136,6 +130,7 @@ AGENT OUTPUT:
 # Main entry point — called by orchestrator._execute()
 # ------------------------------------------------------------------
 
+
 async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None) -> str:
     """
     Build a fresh agent for a single task and invoke it.
@@ -146,13 +141,15 @@ async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None) -
     """
     llm = get_chat_model("main", temperature=0, max_tokens=3000)
 
-    tools         = _TOOLS_BY_TYPE.get(task.get("task_type", ""), _DEFAULT_TOOLS)
+    tools = _TOOLS_BY_TYPE.get(task.get("task_type", ""), _DEFAULT_TOOLS)
     system_prompt = _build_system_prompt(task, dep_outputs or [])
 
     logger.info(f"Building agent for task {task['id']} (type={task['task_type']}, tools={[t.name for t in tools]})")
 
     agent = create_agent(
-        llm, tools=tools, system_prompt=system_prompt,
+        llm,
+        tools=tools,
+        system_prompt=system_prompt,
         middleware=get_model_middleware(temperature=0, max_tokens=3000),
     )
 
@@ -170,7 +167,7 @@ async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None) -
         {"messages": [{"role": "user", "content": user_message}]},
         stream_mode="values",
     ):
-        last_msg   = step["messages"][-1]
+        last_msg = step["messages"][-1]
         tool_calls = getattr(last_msg, "tool_calls", None)
         if tool_calls:
             logger.info(f"Task {task['id']} → tool calls: {[tc['name'] for tc in tool_calls]}")
@@ -188,9 +185,12 @@ async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None) -
     # The final AIMessage can be empty for reasoning models (reasoning tokens are internal).
     # Walk backwards to find the last message that actually has visible content.
     output = next(
-        (_get_content(msg) for msg in reversed(final_state["messages"])
-         if type(msg).__name__ == "AIMessage" and _get_content(msg).strip()),
-        ""
+        (
+            _get_content(msg)
+            for msg in reversed(final_state["messages"])
+            if type(msg).__name__ == "AIMessage" and _get_content(msg).strip()
+        ),
+        "",
     )
 
     if not output.strip():
@@ -201,8 +201,7 @@ async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None) -
     # ── LLM-as-judge ─────────────────────────────────────────────────
     verdict = await _judge_task(task, output)
     logger.info(
-        f"Judge verdict for {task['id']}: score={verdict.score}, "
-        f"passed={verdict.passed}, reason={verdict.reason}"
+        f"Judge verdict for {task['id']}: score={verdict.score}, passed={verdict.passed}, reason={verdict.reason}"
     )
     if not verdict.passed:
         raise ValueError(f"Judge rejected output (score={verdict.score}/10): {verdict.reason}")

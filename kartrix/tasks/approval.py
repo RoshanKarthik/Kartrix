@@ -49,11 +49,11 @@ def _render_plan(plan: ExecutionPlan) -> None:
     console.print(f"[dim]Stack: {', '.join(plan.tech_stack)} | Est: {plan.total_estimated_hours}h[/dim]\n")
 
     table = Table(show_header=True, header_style="bold")
-    table.add_column("ID",          style="dim",    width=12)
-    table.add_column("Type",        width=10)
-    table.add_column("Title",       width=32)
-    table.add_column("Depends on",  width=20)
-    table.add_column("Output files",width=30)
+    table.add_column("ID", style="dim", width=12)
+    table.add_column("Type", width=10)
+    table.add_column("Title", width=32)
+    table.add_column("Depends on", width=20)
+    table.add_column("Output files", width=30)
 
     for task in plan.tasks:
         table.add_row(

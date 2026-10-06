@@ -39,7 +39,7 @@ async def update_index() -> None:
 
 async def initialize(checkpointer):
     """Bootstrap LLM, embedder, index, watcher, MCP tools, cache, and session before the REPL starts."""
-    llm      = get_llm()
+    llm = get_llm()
     embedder = get_embedder()
     console.print(f"[dim]LLM: {settings.llm.provider} / {settings.llm.model}[/dim]")
     console.print(f"[dim]Embedder: {settings.embeddings.provider} / {settings.embeddings.model}[/dim]")
@@ -60,8 +60,8 @@ async def initialize(checkpointer):
         if semantic_cache is not None:
             await semantic_cache.invalidate_domain(cache_domain)
 
-    observer   = start_watcher(repo_path, loop, on_change=_invalidate_cache_on_change)
-    agent      = await build_agent(checkpointer)
+    observer = start_watcher(repo_path, loop, on_change=_invalidate_cache_on_change)
+    agent = await build_agent(checkpointer)
     session_id = get_current_session()
     await record_session(session_id, repo_path)
     console.print(f"[dim]Session: {session_id}[/dim]")
@@ -92,8 +92,11 @@ async def _run_async():
                 logger.info(f"Ask command received: {question}")
                 console.print(f"[dim]Searching for: {question}...[/dim]")
                 response = await handle_query(
-                    agent, question, session_id,
-                    semantic_cache=semantic_cache, cache_domain=cache_domain,
+                    agent,
+                    question,
+                    session_id,
+                    semantic_cache=semantic_cache,
+                    cache_domain=cache_domain,
                 )
                 console.print(response)
             elif user_input == "/reindex":
@@ -142,8 +145,10 @@ async def _run_async():
         stop_watcher(observer)
         await dispose_engine()
 
+
 def run():
     asyncio.run(_run_async())
+
 
 if __name__ == "__main__":
     run()

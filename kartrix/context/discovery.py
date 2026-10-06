@@ -95,7 +95,7 @@ class RepoFilter:
             spec = self.specs.get(base)
             if spec is None:
                 continue
-            sub = target[len(base) + 1:] if base else target
+            sub = target[len(base) + 1 :] if base else target
             result = spec.check_file(sub)
             if result.include is not None:
                 return result.include
@@ -110,7 +110,7 @@ class RepoFilter:
             return False
         parts = rel.split("/")
         for i in range(1, len(parts)):
-            self.add_gitignore("/".join(parts[:i - 1]))
+            self.add_gitignore("/".join(parts[: i - 1]))
             if self.is_ignored("/".join(parts[:i]), is_dir=True):
                 return False
         self.add_gitignore("/".join(parts[:-1]))
@@ -147,7 +147,8 @@ def discover_files(root: str | Path, repo_filter: RepoFilter | None = None) -> l
 
         # Prune in place: ignored dirs (and their contents) are never visited.
         dirnames[:] = sorted(
-            d for d in dirnames
+            d
+            for d in dirnames
             if not os.path.islink(os.path.join(dirpath, d)) and not flt.is_ignored(_rel(d), is_dir=True)
         )
         for name in filenames:

@@ -60,12 +60,17 @@ class PgCheckpointSaver(BaseCheckpointSaver[str]):
     # ── helpers ────────────────────────────────────────────────────────
 
     async def _writes(self, session, thread_id: str, ns: str, checkpoint_id: str) -> list[tuple[str, str, Any]]:
-        rows = (await session.execute(
-            select(CheckpointWrite.task_id, CheckpointWrite.channel, CheckpointWrite.type, CheckpointWrite.value)
-            .where(CheckpointWrite.thread_id == thread_id, CheckpointWrite.checkpoint_ns == ns,
-                   CheckpointWrite.checkpoint_id == checkpoint_id)
-            .order_by(CheckpointWrite.task_id, CheckpointWrite.idx)
-        )).all()
+        rows = (
+            await session.execute(
+                select(CheckpointWrite.task_id, CheckpointWrite.channel, CheckpointWrite.type, CheckpointWrite.value)
+                .where(
+                    CheckpointWrite.thread_id == thread_id,
+                    CheckpointWrite.checkpoint_ns == ns,
+                    CheckpointWrite.checkpoint_id == checkpoint_id,
+                )
+                .order_by(CheckpointWrite.task_id, CheckpointWrite.idx)
+            )
+        ).all()
         return [(r.task_id, r.channel, self.serde.loads_typed((r.type, r.value))) for r in rows]
 
     async def _to_tuple(self, session, row: Checkpoint) -> CheckpointTuple:
@@ -175,17 +180,19 @@ class PgCheckpointSaver(BaseCheckpointSaver[str]):
         rows = []
         for idx, (channel, value) in enumerate(writes):
             type_, blob = self.serde.dumps_typed(value)
-            rows.append({
-                "thread_id": str(conf["thread_id"]),
-                "checkpoint_ns": str(conf.get("checkpoint_ns", "")),
-                "checkpoint_id": str(conf["checkpoint_id"]),
-                "task_id": task_id,
-                "idx": WRITES_IDX_MAP.get(channel, idx),
-                "channel": channel,
-                "type": type_,
-                "value": blob,
-                "task_path": task_path,
-            })
+            rows.append(
+                {
+                    "thread_id": str(conf["thread_id"]),
+                    "checkpoint_ns": str(conf.get("checkpoint_ns", "")),
+                    "checkpoint_id": str(conf["checkpoint_id"]),
+                    "task_id": task_id,
+                    "idx": WRITES_IDX_MAP.get(channel, idx),
+                    "channel": channel,
+                    "type": type_,
+                    "value": blob,
+                    "task_path": task_path,
+                }
+            )
         stmt = insert(CheckpointWrite.__table__).values(rows)
         # Special writes (errors, interrupts, ...) replace earlier ones; regular writes are
         # write-once, matching LangGraph's reference savers.
@@ -229,14 +236,21 @@ class PgCheckpointSaver(BaseCheckpointSaver[str]):
     ) -> Iterator[CheckpointTuple]:
         async def _collect() -> list[CheckpointTuple]:
             return [t async for t in self.alist(config, filter=filter, before=before, limit=limit)]
+
         yield from self._bridge(_collect())
 
-    def put(self, config: RunnableConfig, checkpoint: LGCheckpoint, metadata: CheckpointMetadata,
-            new_versions: ChannelVersions) -> RunnableConfig:
+    def put(
+        self,
+        config: RunnableConfig,
+        checkpoint: LGCheckpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
+    ) -> RunnableConfig:
         return self._bridge(self.aput(config, checkpoint, metadata, new_versions))
 
-    def put_writes(self, config: RunnableConfig, writes: Sequence[tuple[str, Any]], task_id: str,
-                   task_path: str = "") -> None:
+    def put_writes(
+        self, config: RunnableConfig, writes: Sequence[tuple[str, Any]], task_id: str, task_path: str = ""
+    ) -> None:
         return self._bridge(self.aput_writes(config, writes, task_id, task_path))
 
     def delete_thread(self, thread_id: str) -> None:

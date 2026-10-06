@@ -44,12 +44,12 @@ class TaskOrchestrator:
         await self.store.set_project_status(project_id, ProjectStatus.RUNNING)
 
         while True:
-            progress    = await self.store.get_progress(project_id)
-            pending     = progress.get("pending", 0)
+            progress = await self.store.get_progress(project_id)
+            pending = progress.get("pending", 0)
             in_progress = progress.get("in_progress", 0)
-            completed   = progress.get("completed", 0)
-            failed      = progress.get("failed", 0)
-            total       = sum(progress.values())
+            completed = progress.get("completed", 0)
+            failed = progress.get("failed", 0)
+            total = sum(progress.values())
 
             console.print(
                 f"[dim]Progress: {completed}/{total} completed"
@@ -60,8 +60,7 @@ class TaskOrchestrator:
             # all tasks are done - nothing in pending and nothing is in progress
             if pending == 0 and in_progress == 0:
                 ok = progress.get("failed", 0) == 0 and progress.get("blocked", 0) == 0
-                await self.store.set_project_status(
-                    project_id, ProjectStatus.COMPLETED if ok else ProjectStatus.FAILED)
+                await self.store.set_project_status(project_id, ProjectStatus.COMPLETED if ok else ProjectStatus.FAILED)
                 _print_final_summary(progress)
                 break
 
@@ -77,7 +76,7 @@ class TaskOrchestrator:
                 await asyncio.sleep(5)
                 continue
 
-            batch = ready[:self.max_concurrent]
+            batch = ready[: self.max_concurrent]
             await asyncio.gather(*[self._execute(project_id, task) for task in batch])
 
     async def _execute(self, project_id: str, task: dict) -> None:
@@ -110,8 +109,8 @@ async def handle_plan_command(goal: str, session_id: str | None = None) -> None:
       1. Check DB for an unfinished (approved/running) project of this repo → resume + recover
       2. Otherwise: plan → human approval loop → persist → execute
     """
-    store     = TaskStore()
-    recover   = RecoveryManager(store)
+    store = TaskStore()
+    recover = RecoveryManager(store)
     repo_path = str(Path.cwd().resolve())
 
     project_id = await store.get_resumable_project(repo_path)
@@ -126,7 +125,7 @@ async def handle_plan_command(goal: str, session_id: str | None = None) -> None:
         approved_plan = None
 
         while approved_plan is None:
-            raw_plan      = create_plan(goal, extra_context)
+            raw_plan = create_plan(goal, extra_context)
             approved_plan = present_plan_for_approval(raw_plan)
             if approved_plan is None:
                 extra_context = input("What should change in the re-plan?\n> ").strip()
@@ -151,9 +150,9 @@ async def handle_plan_command(goal: str, session_id: str | None = None) -> None:
 
 def _print_final_summary(progress: dict[str, int]) -> None:
     completed = progress.get("completed", 0)
-    failed    = progress.get("failed", 0)
-    blocked   = progress.get("blocked", 0)
-    skipped   = progress.get("skipped", 0)
+    failed = progress.get("failed", 0)
+    blocked = progress.get("blocked", 0)
+    skipped = progress.get("skipped", 0)
 
     if failed == 0 and blocked == 0:
         console.print(f"\n[bold green]🎉 All {completed} tasks completed successfully![/bold green]")
