@@ -1,11 +1,12 @@
 from __future__ import annotations
+
 from pathlib import Path
 
 from langchain.tools import tool
 
 from kartrix.config import settings
-from kartrix.skills.registry import SkillRegistry, SkillNotFoundError
 from kartrix.observability.logger import get_logger
+from kartrix.skills.registry import SkillNotFoundError, SkillRegistry
 
 logger = get_logger(__name__)
 

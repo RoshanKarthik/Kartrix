@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
-from pydantic import BaseModel
+from typing import Any
 
 from langchain.agents import create_agent
+from pydantic import BaseModel
 
 from kartrix.llm.factory import get_chat_model, get_model_middleware
+from kartrix.observability.logger import get_logger
 from kartrix.tools.filesystem_tools import (
     append_file,
     file_exists,
@@ -14,7 +16,6 @@ from kartrix.tools.filesystem_tools import (
     write_file,
 )
 from kartrix.tools.terminal_tools import run_command
-from kartrix.observability.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -162,7 +163,7 @@ async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None) -
         "Do not spend time listing directories. Go directly to writing the output files."
     )
 
-    final_state = None
+    final_state: dict[str, Any] = {"messages": []}  # stays empty if the stream yields nothing
     async for step in agent.astream(
         {"messages": [{"role": "user", "content": user_message}]},
         stream_mode="values",

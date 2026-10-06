@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import enum
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import case, func, literal_column, select, text, update
+from sqlalchemy import Boolean, CursorResult, case, exists, func, select, update
+from sqlalchemy.orm import aliased
 
 from kartrix.db.engine import session_scope
 from kartrix.db.models import Project, ProjectStatus, Task, TaskStatus
 from kartrix.observability.logger import get_logger
 
+if TYPE_CHECKING:
+    from kartrix.tasks.planner import ExecutionPlan  # planner imports TaskType from here
+
 logger = get_logger(__name__)
 
-__all__ = ["ProjectStatus", "TaskStatus", "TaskType", "TaskStore"]
+__all__ = ["ProjectStatus", "TaskStatus", "TaskStore", "TaskType"]
 
 # A project in one of these states is picked up again by the next /plan.
 _RESUMABLE = (ProjectStatus.APPROVED, ProjectStatus.RUNNING)
@@ -72,7 +76,9 @@ class TaskStore:
     # Project operations
     # ------------------------------------------------------------------
 
-    async def create_project(self, goal: str, plan, repo_path: str, session_id: str | None = None) -> str:
+    async def create_project(
+        self, goal: str, plan: ExecutionPlan, repo_path: str, session_id: str | None = None
+    ) -> str:
         """Persist an approved ExecutionPlan as a project + task rows. Returns the project id."""
         async with session_scope() as s:
             project = Project(
@@ -140,10 +146,13 @@ class TaskStore:
     async def claim_task(self, project_id: str, key: str) -> bool:
         """Atomically PENDING → IN_PROGRESS. False if someone else already claimed it."""
         async with session_scope() as s:
-            res = await s.execute(
-                update(Task)
-                .where(Task.project_id == uuid.UUID(project_id), Task.key == key, Task.status == TaskStatus.PENDING)
-                .values(status=TaskStatus.IN_PROGRESS, started_at=func.now())
+            res = cast(
+                CursorResult[Any],
+                await s.execute(
+                    update(Task)
+                    .where(Task.project_id == uuid.UUID(project_id), Task.key == key, Task.status == TaskStatus.PENDING)
+                    .values(status=TaskStatus.IN_PROGRESS, started_at=func.now())
+                ),
             )
         return res.rowcount == 1
 
@@ -218,15 +227,11 @@ class TaskStore:
 
     async def get_ready_tasks(self, project_id: str) -> list[dict[str, Any]]:
         """PENDING tasks of the project whose every dependency is COMPLETED or SKIPPED."""
-        dep = (
-            select(literal_column("1"))
-            .select_from(Task.__table__.alias("d"))
-            .where(
-                text(
-                    "d.project_id = tasks.project_id AND jsonb_exists(tasks.depends_on, d.key) "
-                    "AND d.status NOT IN ('completed', 'skipped')"
-                )
-            )
+        d = aliased(Task)
+        unfinished_dep = exists().where(
+            d.project_id == Task.project_id,
+            func.jsonb_exists(Task.depends_on, d.key, type_=Boolean),
+            d.status.not_in([TaskStatus.COMPLETED, TaskStatus.SKIPPED]),
         )
         async with session_scope() as s:
             rows = (
@@ -234,7 +239,7 @@ class TaskStore:
                     await s.execute(
                         select(Task)
                         .where(
-                            Task.project_id == uuid.UUID(project_id), Task.status == TaskStatus.PENDING, ~dep.exists()
+                            Task.project_id == uuid.UUID(project_id), Task.status == TaskStatus.PENDING, ~unfinished_dep
                         )
                         .order_by(Task.execution_order)
                     )

@@ -1,14 +1,17 @@
 import asyncio
 from pathlib import Path
+
 from rich.console import Console
 from rich.prompt import Prompt
 
+from kartrix.agent.factory import build_agent
+from kartrix.agent.orchestrator import handle_query
+from kartrix.cache.semantic_cache import build_semantic_cache, get_repo_domain
 from kartrix.config import settings
 from kartrix.context.indexers.pg_index import index_repo, show_index
-from kartrix.llm.factory import get_llm, get_embedder
-from kartrix.agent.factory import build_agent
-from kartrix.memory.short_term import get_checkpointer
-from kartrix.agent.orchestrator import handle_query
+from kartrix.context.indexers.watcher import start_watcher, stop_watcher
+from kartrix.db.engine import dispose_engine
+from kartrix.llm.factory import get_embedder, get_llm
 from kartrix.memory.session import (
     InvalidSessionIdError,
     get_current_session,
@@ -16,13 +19,10 @@ from kartrix.memory.session import (
     record_session,
     switch_session,
 )
-from kartrix.cache.semantic_cache import build_semantic_cache, get_repo_domain
-from kartrix.db.engine import dispose_engine
+from kartrix.memory.short_term import get_checkpointer
 from kartrix.observability.logger import get_logger
-
 from kartrix.tasks.orchestrator import handle_plan_command
 from kartrix.tasks.status import show_task_status
-from kartrix.context.indexers.watcher import start_watcher, stop_watcher
 
 console = Console()
 logger = get_logger(__name__)
@@ -39,8 +39,9 @@ async def update_index() -> None:
 
 async def initialize(checkpointer):
     """Bootstrap LLM, embedder, index, watcher, MCP tools, cache, and session before the REPL starts."""
-    llm = get_llm()
-    embedder = get_embedder()
+    # Built once up front so a missing API key or bad provider config fails at startup.
+    get_llm()
+    get_embedder()
     console.print(f"[dim]LLM: {settings.llm.provider} / {settings.llm.model}[/dim]")
     console.print(f"[dim]Embedder: {settings.embeddings.provider} / {settings.embeddings.model}[/dim]")
 
@@ -57,7 +58,7 @@ async def initialize(checkpointer):
     loop = asyncio.get_running_loop()
 
     async def _invalidate_cache_on_change() -> None:
-        if semantic_cache is not None:
+        if semantic_cache is not None and cache_domain is not None:
             await semantic_cache.invalidate_domain(cache_domain)
 
     observer = start_watcher(repo_path, loop, on_change=_invalidate_cache_on_change)
@@ -65,8 +66,8 @@ async def initialize(checkpointer):
     session_id = get_current_session()
     await record_session(session_id, repo_path)
     console.print(f"[dim]Session: {session_id}[/dim]")
-    console.print(f"[green]✓ Ready[/green]\n")
-    return llm, embedder, agent, session_id, observer, semantic_cache, cache_domain
+    console.print("[green]✓ Ready[/green]\n")
+    return agent, session_id, observer, semantic_cache, cache_domain
 
 
 async def _run_async():
@@ -74,7 +75,7 @@ async def _run_async():
     console.print("\n[bold blue]Kartrix[/bold blue] — RAG-powered code assistant")
 
     checkpointer = get_checkpointer()
-    llm, embedder, agent, session_id, observer, semantic_cache, cache_domain = await initialize(checkpointer)
+    agent, session_id, observer, semantic_cache, cache_domain = await initialize(checkpointer)
     console.print("Type [bold]'/exit'[/bold] to quit\n")
 
     try:

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from rich.console import Console
 from rich.table import Table
-
-from pathlib import Path
 
 from kartrix.tasks.task_store import TaskStore
 

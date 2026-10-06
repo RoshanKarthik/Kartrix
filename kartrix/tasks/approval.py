@@ -3,7 +3,7 @@ from __future__ import annotations
 from rich.console import Console
 from rich.table import Table
 
-from kartrix.tasks.planner import ExecutionPlan, PlannedTask
+from kartrix.tasks.planner import ExecutionPlan
 
 console = Console()
 

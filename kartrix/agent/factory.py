@@ -1,11 +1,11 @@
 from langchain.agents import create_agent
 
-from kartrix.llm.factory import get_llm, get_model_middleware
 from kartrix.agent.tools import search_codebase
-from kartrix.observability.logger import get_logger
-from kartrix.tools.terminal_tools import run_command, run_in_directory
+from kartrix.llm.factory import get_llm, get_model_middleware
 from kartrix.mcp.mcp_client import get_mcp_tools
-from kartrix.skills.skill_tools import load_skill, build_skills_prompt
+from kartrix.observability.logger import get_logger
+from kartrix.skills.skill_tools import build_skills_prompt, load_skill
+from kartrix.tools.terminal_tools import run_command, run_in_directory
 
 logger = get_logger(__name__)
 

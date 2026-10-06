@@ -118,7 +118,8 @@ class RepoFilter:
 
     def is_indexable(self, path: str | Path) -> bool:
         """Full check for a single file (used by the watcher): rules + size/binary/symlink."""
-        return self.passes_rules(path) and self._file_ok(self.root / self.rel(path))
+        rel = self.rel(path)
+        return rel is not None and self.passes_rules(path) and self._file_ok(self.root / rel)
 
     def _file_ok(self, path: Path) -> bool:
         if path.suffix.lower() not in ALL_EXTENSIONS or path.is_symlink():
@@ -132,6 +133,10 @@ class RepoFilter:
             return False
 
 
+def _join(rel_dir: str, name: str) -> str:
+    return f"{rel_dir}/{name}" if rel_dir else name
+
+
 def discover_files(root: str | Path, repo_filter: RepoFilter | None = None) -> list[Path]:
     """Walk ``root`` and return every indexable file (absolute paths, sorted)."""
     flt = repo_filter or RepoFilter.load(root)
@@ -142,17 +147,14 @@ def discover_files(root: str | Path, repo_filter: RepoFilter | None = None) -> l
         if ".gitignore" in filenames:
             flt.add_gitignore(rel_dir)
 
-        def _rel(name: str) -> str:
-            return f"{rel_dir}/{name}" if rel_dir else name
-
         # Prune in place: ignored dirs (and their contents) are never visited.
         dirnames[:] = sorted(
             d
             for d in dirnames
-            if not os.path.islink(os.path.join(dirpath, d)) and not flt.is_ignored(_rel(d), is_dir=True)
+            if not os.path.islink(os.path.join(dirpath, d)) and not flt.is_ignored(_join(rel_dir, d), is_dir=True)
         )
         for name in filenames:
-            rel = _rel(name)
+            rel = _join(rel_dir, name)
             if not flt.is_ignored(rel, is_dir=False) and flt._file_ok(flt.root / rel):
                 found.append(flt.root / rel)
     found.sort()

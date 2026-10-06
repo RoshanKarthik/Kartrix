@@ -8,8 +8,9 @@ never create tables with ``metadata.create_all`` outside tests.
 import enum
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
+from pgvector.sqlalchemy import HALFVEC
 from sqlalchemy import (
     BigInteger,
     DateTime,
@@ -27,7 +28,6 @@ from sqlalchemy import (
     func,
     text,
 )
-from pgvector.sqlalchemy import HALFVEC
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -43,7 +43,7 @@ NAMING_CONVENTION = {
 
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
-    type_annotation_map = {dict[str, Any]: JSONB, list[Any]: JSONB}
+    type_annotation_map: ClassVar[dict[Any, Any]] = {dict[str, Any]: JSONB, list[Any]: JSONB}
 
 
 def _str_enum(enum_cls: type[enum.Enum], name: str) -> Enum:

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
 from langchain.agents import create_agent
+from pydantic import BaseModel
 
 from kartrix.llm.factory import get_chat_model, get_model_middleware
-from kartrix.tasks.task_store import TaskType
 from kartrix.observability.logger import get_logger
+from kartrix.tasks.task_store import TaskType
 
 logger = get_logger(__name__)
 

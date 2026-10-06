@@ -1,0 +1,12 @@
+#!/bin/sh
+# Kartrix pre-commit hook: the same lint/type checks CI runs (tests run in CI).
+# Enable once per clone:   git config core.hooksPath .githooks
+# Skip in an emergency:    git commit --no-verify
+set -e
+
+echo "pre-commit: ruff check"
+uv run --frozen ruff check .
+echo "pre-commit: ruff format --check"
+uv run --frozen ruff format --check .
+echo "pre-commit: mypy"
+uv run --frozen mypy

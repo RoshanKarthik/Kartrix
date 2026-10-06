@@ -1,6 +1,6 @@
 import os
-from langchain.tools import tool
 
+from langchain.tools import tool
 
 _MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 
@@ -18,7 +18,7 @@ def read_file(file_path: str) -> str:
     if size > _MAX_FILE_SIZE_BYTES:
         return f"Error: file too large ({size} bytes). Max allowed is {_MAX_FILE_SIZE_BYTES} bytes"
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             return f.read()
     except UnicodeDecodeError:
         return f"Error: file is not valid UTF-8 text: {file_path}"

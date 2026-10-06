@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import platform
 import threading
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
+from watchdog.observers.api import BaseObserver
 from watchdog.observers.polling import PollingObserver
-from watchdog.events import FileSystemEventHandler, FileSystemEvent
 
 from kartrix.context.discovery import RepoFilter
 from kartrix.observability.logger import get_logger
@@ -38,7 +40,7 @@ logger = get_logger(__name__)
 _DEBOUNCE_SECONDS = 1.5
 
 
-def _get_observer() -> Observer:
+def _get_observer() -> BaseObserver:
     """
     Return the best available watchdog observer for the current OS.
 
@@ -131,26 +133,26 @@ class _CodebaseEventHandler(FileSystemEventHandler):
 
     def on_created(self, event: FileSystemEvent) -> None:
         if not event.is_directory:
-            self._handle(event.src_path)
+            self._handle(os.fsdecode(event.src_path))
 
     def on_modified(self, event: FileSystemEvent) -> None:
         if not event.is_directory:
-            self._handle(event.src_path)
+            self._handle(os.fsdecode(event.src_path))
 
     def on_deleted(self, event: FileSystemEvent) -> None:
         if not event.is_directory:
-            self._handle(event.src_path, deleted=True)
+            self._handle(os.fsdecode(event.src_path), deleted=True)
 
     def on_moved(self, event: FileSystemEvent) -> None:
         # A rename/move = delete the old path + upsert the new path.
         if not event.is_directory:
-            self._handle(event.src_path, deleted=True)
-            self._handle(event.dest_path)
+            self._handle(os.fsdecode(event.src_path), deleted=True)
+            self._handle(os.fsdecode(event.dest_path))
 
 
 def start_watcher(
     repo_path: str, loop: asyncio.AbstractEventLoop, on_change: Callable[[], Awaitable[None]] | None = None
-) -> Observer:
+) -> BaseObserver:
     """
     Start a filesystem observer on repo_path in a background daemon thread.
 
@@ -173,7 +175,7 @@ def start_watcher(
     return observer
 
 
-def stop_watcher(observer: Observer) -> None:
+def stop_watcher(observer: BaseObserver) -> None:
     """
     Cleanly stop the observer and wait for its thread to finish.
     Called in the finally block of _run_async() in main.py so it

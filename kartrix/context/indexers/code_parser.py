@@ -1,12 +1,9 @@
-from pathlib import Path
 from dataclasses import dataclass
-
+from pathlib import Path
 
 from tree_sitter_languages import get_parser
 
-
 from kartrix.observability.logger import get_logger
-
 
 logger = get_logger(__name__)
 
@@ -97,7 +94,7 @@ def _parse_with_treesitter(source: str, filepath: str, language_name: str) -> li
     tree = parser.parse(data)
     lines = source.splitlines()
 
-    chunks = []
+    chunks: list[ParsedChunk] = []
     _walk(tree.root_node, data, filepath, chunks, depth=0)
 
     # If the AST yielded nothing (e.g. a file with only imports), fall back to line chunks

@@ -16,8 +16,8 @@ from __future__ import annotations
 import asyncio
 import json
 import random
-from collections.abc import AsyncIterator, Iterator, Sequence
-from typing import Any
+from collections.abc import AsyncIterator, Coroutine, Iterator, Sequence
+from typing import Any, cast
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import (
@@ -31,8 +31,10 @@ from langgraph.checkpoint.base import (
     get_checkpoint_metadata,
 )
 from langgraph.checkpoint.base import Checkpoint as LGCheckpoint
-from sqlalchemy import cast, delete, select
+from sqlalchemy import Table, delete, select
+from sqlalchemy import cast as sql_cast
 from sqlalchemy.dialects.postgresql import JSONB, insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from kartrix.db.engine import session_scope
 from kartrix.db.models import Checkpoint, CheckpointWrite
@@ -59,7 +61,9 @@ class PgCheckpointSaver(BaseCheckpointSaver[str]):
 
     # ── helpers ────────────────────────────────────────────────────────
 
-    async def _writes(self, session, thread_id: str, ns: str, checkpoint_id: str) -> list[tuple[str, str, Any]]:
+    async def _writes(
+        self, session: AsyncSession, thread_id: str, ns: str, checkpoint_id: str
+    ) -> list[tuple[str, str, Any]]:
         rows = (
             await session.execute(
                 select(CheckpointWrite.task_id, CheckpointWrite.channel, CheckpointWrite.type, CheckpointWrite.value)
@@ -71,18 +75,18 @@ class PgCheckpointSaver(BaseCheckpointSaver[str]):
                 .order_by(CheckpointWrite.task_id, CheckpointWrite.idx)
             )
         ).all()
-        return [(r.task_id, r.channel, self.serde.loads_typed((r.type, r.value))) for r in rows]
+        return [(r.task_id, r.channel, self.serde.loads_typed((cast(str, r.type), cast(bytes, r.value)))) for r in rows]
 
-    async def _to_tuple(self, session, row: Checkpoint) -> CheckpointTuple:
+    async def _to_tuple(self, session: AsyncSession, row: Checkpoint) -> CheckpointTuple:
         return CheckpointTuple(
             _cfg(row.thread_id, row.checkpoint_ns, row.checkpoint_id),
-            self.serde.loads_typed((row.type, row.checkpoint)),
-            row.metadata_ or {},
+            self.serde.loads_typed((cast(str, row.type), row.checkpoint)),
+            cast(CheckpointMetadata, row.metadata_ or {}),
             _cfg(row.thread_id, row.checkpoint_ns, row.parent_checkpoint_id) if row.parent_checkpoint_id else None,
             await self._writes(session, row.thread_id, row.checkpoint_ns, row.checkpoint_id),
         )
 
-    def _bridge(self, coro):
+    def _bridge[R](self, coro: Coroutine[Any, Any, R]) -> R:
         """Run ``coro`` on the saver's loop from another thread (sync API)."""
         try:
             if asyncio.get_running_loop() is self.loop:
@@ -127,7 +131,7 @@ class PgCheckpointSaver(BaseCheckpointSaver[str]):
                 stmt = stmt.where(Checkpoint.checkpoint_id == checkpoint_id)
         if filter:
             # Containment on JSONB; values are bound parameters, so keys need no escaping.
-            stmt = stmt.where(Checkpoint.metadata_.op("@>")(cast(_jsonb_safe(filter), JSONB)))
+            stmt = stmt.where(Checkpoint.metadata_.op("@>")(sql_cast(_jsonb_safe(filter), JSONB)))
         if before is not None and (before_id := get_checkpoint_id(before)):
             stmt = stmt.where(Checkpoint.checkpoint_id < before_id)
         stmt = stmt.order_by(Checkpoint.checkpoint_id.desc())
@@ -156,9 +160,9 @@ class PgCheckpointSaver(BaseCheckpointSaver[str]):
             "parent_checkpoint_id": config["configurable"].get("checkpoint_id"),
             "type": type_,
             "checkpoint": blob,
-            "metadata": _jsonb_safe(get_checkpoint_metadata(config, metadata)),
+            "metadata": _jsonb_safe(dict(get_checkpoint_metadata(config, metadata))),
         }
-        stmt = insert(Checkpoint.__table__).values(values)
+        stmt = insert(cast(Table, Checkpoint.__table__)).values(values)
         stmt = stmt.on_conflict_do_update(
             constraint="pk_checkpoints",
             set_={k: stmt.excluded[k] for k in ("parent_checkpoint_id", "type", "checkpoint", "metadata")},
@@ -193,7 +197,7 @@ class PgCheckpointSaver(BaseCheckpointSaver[str]):
                     "task_path": task_path,
                 }
             )
-        stmt = insert(CheckpointWrite.__table__).values(rows)
+        stmt = insert(cast(Table, CheckpointWrite.__table__)).values(rows)
         # Special writes (errors, interrupts, ...) replace earlier ones; regular writes are
         # write-once, matching LangGraph's reference savers.
         if all(w[0] in WRITES_IDX_MAP for w in writes):
@@ -212,14 +216,14 @@ class PgCheckpointSaver(BaseCheckpointSaver[str]):
             await s.execute(delete(CheckpointWrite).where(CheckpointWrite.thread_id == str(thread_id)))
         logger.info("Deleted checkpoint thread", extra={"thread_id": str(thread_id)})
 
-    def get_next_version(self, current: str | None, channel: None) -> str:
+    def get_next_version(self, current: str | int | None, channel: None) -> str:  # int: pre-v2 checkpoints
         if current is None:
             current_v = 0
         elif isinstance(current, int):
             current_v = current
         else:
             current_v = int(current.split(".")[0])
-        return f"{current_v + 1:032}.{random.random():016}"
+        return f"{current_v + 1:032}.{random.random():016}"  # noqa: S311 — tie-breaker, not crypto
 
     # ── sync API (other threads only) ──────────────────────────────────
 

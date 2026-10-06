@@ -67,6 +67,7 @@ def _sql(mode: Mode) -> str:
         join = "dense FULL OUTER JOIN sparse USING (id)"
         score = "COALESCE(1.0 / (:rrf_k + dense.rnk), 0) + COALESCE(1.0 / (:rrf_k + sparse.rnk), 0)"
     id_col = "f.id" if mode != "hybrid" else "id"
+    # Only the constant fragments above are interpolated; every value is a bound parameter.
     return f"""
 WITH {",".join(ctes)},
 fused AS (SELECT {id_col} AS id, {score} AS score FROM {join})
@@ -75,7 +76,7 @@ FROM fused
 JOIN code_chunks c ON c.id = fused.id
 JOIN code_files cf ON cf.id = c.file_id
 ORDER BY fused.score DESC, c.id
-LIMIT :k"""
+LIMIT :k"""  # noqa: S608
 
 
 async def retrieve(

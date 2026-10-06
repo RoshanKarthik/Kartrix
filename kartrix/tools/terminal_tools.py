@@ -1,7 +1,7 @@
-import subprocess
 import os
-from langchain.tools import tool
+import subprocess
 
+from langchain.tools import tool
 
 _BLOCKED_COMMANDS = {"rm -rf /", "mkfs", "dd if=", ":(){:|:&};:"}
 _TIMEOUT_SECONDS = 30
@@ -30,7 +30,8 @@ def run_command(command: str) -> str:
     if _is_blocked(command):
         return "Error: command is not allowed for safety reasons"
     try:
-        result = subprocess.run(
+        # shell=True goes away with the command policy + sandbox in Phase 1 (B2, B8).
+        result = subprocess.run(  # noqa: S602
             command,
             shell=True,
             capture_output=True,
@@ -58,7 +59,8 @@ def run_in_directory(command: str, directory: str) -> str:
     if _is_blocked(command):
         return "Error: command is not allowed for safety reasons"
     try:
-        result = subprocess.run(
+        # shell=True goes away with the command policy + sandbox in Phase 1 (B2, B8).
+        result = subprocess.run(  # noqa: S602
             command,
             shell=True,
             capture_output=True,

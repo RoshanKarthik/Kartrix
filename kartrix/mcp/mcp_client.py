@@ -1,7 +1,7 @@
 from langchain_mcp_adapters.client import MultiServerMCPClient
+
 from kartrix.mcp.mcp_config import load_mcp_configs
 from kartrix.observability.logger import get_logger
-
 
 logger = get_logger(__name__)
 

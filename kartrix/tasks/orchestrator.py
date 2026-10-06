@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from rich.console import Console
 
-from pathlib import Path
-
-from kartrix.tasks.task_store import ProjectStatus, TaskStore
-from kartrix.tasks.executor import run_subtask_agent
-from kartrix.tasks.planner import create_plan
-from kartrix.tasks.approval import present_plan_for_approval
-from kartrix.tasks.recovery import RecoveryManager
 from kartrix.context.indexers.pg_index import index_repo
 from kartrix.observability.logger import get_logger
+from kartrix.tasks.approval import present_plan_for_approval
+from kartrix.tasks.executor import run_subtask_agent
+from kartrix.tasks.planner import create_plan
+from kartrix.tasks.recovery import RecoveryManager
+from kartrix.tasks.task_store import ProjectStatus, TaskStore
 
 logger = get_logger(__name__)
 console = Console()
@@ -125,10 +124,10 @@ async def handle_plan_command(goal: str, session_id: str | None = None) -> None:
         approved_plan = None
 
         while approved_plan is None:
-            raw_plan = create_plan(goal, extra_context)
-            approved_plan = present_plan_for_approval(raw_plan)
+            raw_plan = await asyncio.to_thread(create_plan, goal, extra_context)
+            approved_plan = await asyncio.to_thread(present_plan_for_approval, raw_plan)
             if approved_plan is None:
-                extra_context = input("What should change in the re-plan?\n> ").strip()
+                extra_context = (await asyncio.to_thread(input, "What should change in the re-plan?\n> ")).strip()
                 console.print("\n[dim]Re-planning with your feedback...[/dim]")
 
         project_id = await store.create_project(goal, approved_plan, repo_path, session_id)
@@ -157,7 +156,7 @@ def _print_final_summary(progress: dict[str, int]) -> None:
     if failed == 0 and blocked == 0:
         console.print(f"\n[bold green]🎉 All {completed} tasks completed successfully![/bold green]")
     else:
-        console.print(f"\n[bold yellow]⚠ Execution finished with issues:[/bold yellow]")
+        console.print("\n[bold yellow]⚠ Execution finished with issues:[/bold yellow]")
         console.print(f"  ✅ Completed: {completed}")
         if failed:
             console.print(f"  ❌ Failed:    {failed}  (run /task_status to review)")

@@ -1,9 +1,7 @@
 from langchain.tools import tool
 
-
 from kartrix.context.retrievers.pg_hybrid import retrieve
 from kartrix.observability.logger import get_logger
-
 
 logger = get_logger(__name__)
 

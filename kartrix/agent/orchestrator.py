@@ -1,7 +1,6 @@
 from kartrix.config import settings
 from kartrix.observability.logger import get_logger
 
-
 logger = get_logger(__name__)
 
 

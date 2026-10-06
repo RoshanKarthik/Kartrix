@@ -5,7 +5,6 @@ import random
 import re
 import time
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
 
 from langchain_core.embeddings import Embeddings
 
@@ -14,7 +13,6 @@ from kartrix.observability.logger import get_logger
 
 logger = get_logger(__name__)
 
-T = TypeVar("T")
 
 # 408 timeout, 409 conflict, 425 too early, 429 rate limited, 5xx server-side.
 TRANSIENT_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
@@ -30,6 +28,8 @@ _TRANSIENT_NAMES = frozenset(
         "ConnectTimeout",
         "ServerTimeoutError",
         "ConnectionError",
+        "ConnectError",  # httpx
+        "NetworkError",  # httpx base for connect/read/write failures
         "ClientConnectionError",
         "ServerDisconnectedError",
         "APITimeoutError",
@@ -85,10 +85,10 @@ def should_retry_model_call(exc: Exception) -> bool:
 def backoff_delay(attempt: int, policy: RetrySettings) -> float:
     """Delay before retry number ``attempt`` (0-based): exponential, capped, full jitter."""
     ceiling = min(policy.max_delay, policy.initial_delay * policy.backoff_factor**attempt)
-    return random.uniform(ceiling / 2, ceiling)
+    return random.uniform(ceiling / 2, ceiling)  # noqa: S311 — jitter, not crypto
 
 
-def call_with_retry(fn: Callable[[], T], policy: RetrySettings, what: str) -> T:
+def call_with_retry[T](fn: Callable[[], T], policy: RetrySettings, what: str) -> T:
     for attempt in range(policy.max_retries + 1):
         try:
             return fn()
@@ -104,7 +104,7 @@ def call_with_retry(fn: Callable[[], T], policy: RetrySettings, what: str) -> T:
     raise AssertionError("unreachable")
 
 
-async def acall_with_retry(fn: Callable[[], Awaitable[T]], policy: RetrySettings, what: str) -> T:
+async def acall_with_retry[T](fn: Callable[[], Awaitable[T]], policy: RetrySettings, what: str) -> T:
     for attempt in range(policy.max_retries + 1):
         try:
             return await fn()

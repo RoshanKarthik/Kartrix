@@ -21,7 +21,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sqlalchemy import Text, cast, delete, func, insert, literal_column, select, update
+from sqlalchemy import ColumnClause, Text, cast, delete, func, insert, literal_column, select, update
 
 from kartrix.config import settings
 from kartrix.context.discovery import RepoFilter, discover_files
@@ -45,9 +45,9 @@ _lock = asyncio.Lock()
 # committed regularly and memory stays bounded on big repos.
 _GROUP_CHUNKS = 256
 
-_TS_CONFIG = literal_column("'english'::regconfig")
-_WEIGHT_A = literal_column("'A'::\"char\"")  # setweight() takes "char", which a bound param isn't
-_WEIGHT_B = literal_column("'B'::\"char\"")
+_TS_CONFIG: ColumnClause[str] = literal_column("'english'::regconfig")
+_WEIGHT_A: ColumnClause[str] = literal_column("'A'::\"char\"")  # setweight() takes "char", which a bound param isn't
+_WEIGHT_B: ColumnClause[str] = literal_column("'B'::\"char\"")
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _IDENT = re.compile(r"[A-Za-z][A-Za-z0-9]*")
 
@@ -215,13 +215,15 @@ async def _index(root: Path, rels: list[str], stats: IndexStats, *, prune: bool)
     group_chunks = 0
     for rel in rels:
         k = known.get(rel)
-        same_model = k is not None and k.embedding_model == model and k.chunker_version == CHUNKER_VERSION
+        # Only a row written by the same model + chunker can be reused as-is.
+        reusable = k if k is not None and k.embedding_model == model and k.chunker_version == CHUNKER_VERSION else None
         try:
             st = (root / rel).stat()
-            if same_model and k.size == st.st_size and k.mtime_ns == st.st_mtime_ns:
+            if reusable is not None and reusable.size == st.st_size and reusable.mtime_ns == st.st_mtime_ns:
                 stats.unchanged += 1
                 continue
-            prep = await asyncio.to_thread(_read_and_parse, root, rel, k is None, k.sha256 if same_model else None)
+            known_sha = reusable.sha256 if reusable is not None else None
+            prep = await asyncio.to_thread(_read_and_parse, root, rel, k is None, known_sha)
         except OSError as e:  # vanished or unreadable between discovery and now
             logger.warning("Cannot read file", extra={"path": rel, "error": str(e)})
             continue

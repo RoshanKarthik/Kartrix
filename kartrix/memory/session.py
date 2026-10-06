@@ -8,7 +8,6 @@ from kartrix.db.engine import session_scope
 from kartrix.db.models import Session
 from kartrix.observability.logger import get_logger
 
-
 logger = get_logger(__name__)
 
 

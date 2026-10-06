@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_FROZEN: "1"          # fail if uv.lock is out of date instead of re-resolving
+  UV_PYTHON_INSTALL_DIR: .uv-python
+
+jobs:
+  lint:
+    name: Lint & type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install
+        run: uv sync
+      - name: Ruff (lint)
+        run: uv run ruff check . --output-format github
+      - name: Ruff (format)
+        run: uv run ruff format --check .
+      - name: Mypy
+        run: uv run mypy
+
+  test:
+    name: Tests
+    needs: lint
+    runs-on: ubuntu-latest
+    env:
+      # Throwaway credentials for the CI containers only.
+      POSTGRES_USER: kartrix
+      POSTGRES_PASSWORD: ci-postgres-password
+      POSTGRES_DB: kartrix
+      REDIS_PASSWORD: ci-redis-password
+      DATABASE_URL: postgresql+asyncpg://kartrix:ci-postgres-password@127.0.0.1:5432/kartrix
+      REDIS_URL: redis://:ci-redis-password@127.0.0.1:6379/0
+      KARTRIX_REQUIRE_SERVICES: "1"   # a service that's down fails the run instead of skipping tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Start Postgres (pgvector) + Redis
+        run: docker compose up -d --wait
+      - name: Install
+        run: uv sync
+      - name: Migrations apply cleanly and match the models
+        run: |
+          uv run alembic upgrade head
+          uv run alembic check
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+      - name: Pytest
+        run: uv run pytest
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose logs --no-color
