@@ -1,0 +1,28 @@
+# Secrets — never commit
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment + project-local uv data (see uv.toml)
+.venv/
+venv/
+.uv-cache/
+.uv-python/
+
+# Kartrix runtime data (memory, tasks, vector index)
+.kartrix/
+.chromadb/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Frontend
+node_modules/
+.next/

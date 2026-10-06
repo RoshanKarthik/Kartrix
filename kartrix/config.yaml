@@ -1,0 +1,50 @@
+# Kartrix settings — validated by kartrix/config.py (unknown or duplicate keys are errors).
+# Any value can be overridden with an env var: KARTRIX_<SECTION>__<KEY>, e.g. KARTRIX_LLM__MODEL.
+# Secrets (API keys, passwords) never go here — put them in .env.
+
+embeddings:
+  provider: openai              # openai | huggingface
+  model: text-embedding-3-small
+  dims: 1536
+
+semantic_cache:
+  enabled: true
+  redis_url: redis://localhost:6379
+  threshold: 0.85
+  ttl: 86400
+
+tasks:
+  db_path: .kartrix/tasks.db
+
+llm:
+  provider: openai              # openai | anthropic
+  model: gpt-5.5
+  judge_model: gpt-4o-mini      # cheaper model used only for LLM-as-judge
+
+skills:
+  skills_dir: .kartrix/skills
+
+memory:
+  db_path: .kartrix/memory/memory.db
+  summarize_at_tokens: 4000
+  keep_last_messages: 20
+
+chromadb:
+  persist_dir: .kartrix/chromadb/
+  collection_name: codebase
+
+rag:
+  mode: semantic                # semantic | hybrid
+
+vector_store:
+  provider: chroma              # chroma | qdrant
+  retrieval_mode: dense         # dense | sparse | hybrid (qdrant only)
+
+qdrant:
+  collection_name: kartrix
+
+logging:
+  level: INFO                   # level for kartrix.* loggers
+  format: json                  # json | text
+  console_level: WARNING        # what reaches stderr (keeps the REPL clean)
+  file: .kartrix/logs/kartrix.jsonl   # null to disable file logging
