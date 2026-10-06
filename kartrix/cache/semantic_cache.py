@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import time
+from urllib.parse import urlsplit
 
 from redis.asyncio import Redis
 from redisvl.index import AsyncSearchIndex
@@ -18,9 +20,28 @@ logger = get_logger(__name__)
 VECTOR_DTYPE = "float32"
 
 
-def _build_index_schema(dims: int) -> dict:
+class CacheConfigError(RuntimeError):
+    """Raised when REDIS_URL is missing or not password-protected."""
+
+
+def get_redis_url() -> str:
+    """REDIS_URL from the environment; refuses URLs without a password (B12)."""
+    url = os.environ.get("REDIS_URL", "").strip()
+    if not url:
+        raise CacheConfigError("REDIS_URL is not set — add it to .env (see .env.example)")
+    parts = urlsplit(url)
+    if parts.scheme not in ("redis", "rediss"):
+        raise CacheConfigError("REDIS_URL must use redis:// or rediss://")
+    if not parts.password:
+        raise CacheConfigError("REDIS_URL has no password — refusing to use an unauthenticated Redis")
+    return url
+
+
+def _build_index_schema(dims: int, namespace: str) -> dict:
     return {
-        "index": {"name": "semantic_cache", "prefix": "cache:"},
+        # Everything this app writes lives under "<namespace>:" so it can share a Redis
+        # with other apps (and be wiped) without touching anything else.
+        "index": {"name": f"{namespace}_semantic_cache", "prefix": f"{namespace}:cache:"},
         "fields": [
             {
                 "name": "query_vector",
@@ -50,13 +71,17 @@ class SemanticCache:
     and a cached answer from one model shouldn't be served under another.
     """
 
-    def __init__(self, redis_url: str, threshold: float, dims: int):
+    def __init__(self, redis_url: str, threshold: float, dims: int, namespace: str):
         self.client = Redis.from_url(redis_url)
         self.embedder = get_embedder()
         self.threshold = threshold
+        self.prefix = f"{namespace}:cache:"
         self.index = AsyncSearchIndex.from_dict(
-            _build_index_schema(dims), redis_client=self.client
+            _build_index_schema(dims, namespace), redis_client=self.client
         )
+
+    async def aclose(self) -> None:
+        await self.client.aclose()
 
     async def setup(self) -> None:
         # overwrite=False: reuse the index if it already exists from a
@@ -94,8 +119,10 @@ class SemanticCache:
     async def put(self, query: str, response: str, domain: str, model: str, ttl: int) -> None:
         """Store a (query, response) pair."""
         vector = await self._embed(query)
-        doc_id = hashlib.sha256(query.encode()).hexdigest()[:16]
-        redis_key = self.index.key(doc_id)
+        # Key = <ns>:cache:<domain>:<hash(model, query)> — the same question asked in another
+        # repo or of another model must not overwrite this entry.
+        digest = hashlib.sha256(f"{model}\x00{query}".encode()).hexdigest()[:32]
+        redis_key = f"{self.prefix}{domain}:{digest}"
         entry = {
             "query_vector": array_to_buffer(vector, VECTOR_DTYPE),
             "response": response,
@@ -107,11 +134,19 @@ class SemanticCache:
         await self.index.load([entry], keys=[redis_key], ttl=ttl)
 
     async def invalidate_domain(self, domain: str) -> None:
-        """Delete all cache entries for a domain (e.g. after a codebase change)."""
-        async for key in self.client.scan_iter("cache:*"):
-            entry = await self.client.hget(key, "domain")
-            if entry and entry.decode() == domain:
-                await self.client.delete(key)
+        """Delete all cache entries for a domain (e.g. after a codebase change).
+
+        The domain is part of the key, so a single prefix scan finds them; ``domain``
+        is a hex digest, so it can't smuggle glob characters into the pattern.
+        """
+        batch: list[bytes] = []
+        async for key in self.client.scan_iter(match=f"{self.prefix}{domain}:*", count=500):
+            batch.append(key)
+            if len(batch) >= 500:
+                await self.client.unlink(*batch)
+                batch.clear()
+        if batch:
+            await self.client.unlink(*batch)
 
 
 def get_repo_domain(repo_path: str) -> str:
@@ -135,9 +170,10 @@ async def build_semantic_cache() -> SemanticCache | None:
     try:
         dims = settings.embeddings.dims
         cache = SemanticCache(
-            redis_url=cache_settings.redis_url,
+            redis_url=get_redis_url(),
             threshold=cache_settings.threshold,
             dims=dims,
+            namespace=cache_settings.namespace,
         )
         await cache.setup()
         logger.info(f"Semantic cache: enabled (threshold={cache.threshold}, dims={dims})")

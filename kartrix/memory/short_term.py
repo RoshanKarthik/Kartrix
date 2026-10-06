@@ -1,24 +1,17 @@
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langchain.agents.middleware import SummarizationMiddleware
-from pathlib import Path
-
 
 from kartrix.config import settings
 from kartrix.llm.factory import get_llm
+from kartrix.memory.checkpointer import PgCheckpointSaver
 from kartrix.observability.logger import get_logger
+
 logger = get_logger(__name__)
 
 
-def get_checkpointer_db_path() -> str:
- db_path = settings.memory.db_path
- Path(db_path).parent.mkdir(parents=True, exist_ok=True)
- logger.info(f"Using SQLite checkpointer at {db_path}")
- return db_path
-
-
-def get_checkpointer() -> AsyncSqliteSaver:
- db_path = get_checkpointer_db_path()
- return AsyncSqliteSaver.from_conn_string(db_path)
+def get_checkpointer() -> PgCheckpointSaver:
+ """Postgres-backed LangGraph checkpointer (must be created inside the running event loop)."""
+ logger.info("Using Postgres checkpointer")
+ return PgCheckpointSaver()
 
 
 def get_summarization_middleware() -> SummarizationMiddleware:

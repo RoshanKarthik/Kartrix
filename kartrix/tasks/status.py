@@ -3,8 +3,9 @@ from __future__ import annotations
 from rich.console import Console
 from rich.table import Table
 
-from kartrix.config import settings
-from kartrix.tasks.task_store import SQLiteTaskStore
+from pathlib import Path
+
+from kartrix.tasks.task_store import TaskStore
 
 console = Console()
 
@@ -18,18 +19,17 @@ _STATUS_STYLE = {
 }
 
 
-def show_task_status() -> None:
-    """Print a Rich table of all tasks for the latest approved project."""
-    db_path    = settings.tasks.db_path
-    store      = SQLiteTaskStore(db_path)
-    project_id = store.get_latest_approved_project()
+async def show_task_status() -> None:
+    """Print a Rich table of all tasks for this repo's most recent project."""
+    store      = TaskStore()
+    project_id = await store.get_latest_project(str(Path.cwd().resolve()))
 
     if not project_id:
         console.print("[yellow]No active project found. Run /plan <goal> first.[/yellow]")
         return
 
-    tasks    = store.get_all_tasks(project_id)
-    progress = store.get_progress(project_id)
+    tasks    = await store.get_all_tasks(project_id)
+    progress = await store.get_progress(project_id)
     total    = sum(progress.values())
     done     = progress.get("completed", 0)
 

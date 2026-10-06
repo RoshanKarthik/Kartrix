@@ -10,14 +10,11 @@ embeddings:
   retry:
     max_retries: 3
 
-semantic_cache:
+semantic_cache:                 # URL (with password) comes from REDIS_URL in .env
   enabled: true
-  redis_url: redis://localhost:6379
+  namespace: kartrix            # keys: <namespace>:cache:<repo>:<hash>
   threshold: 0.85
   ttl: 86400
-
-tasks:
-  db_path: .kartrix/tasks.db
 
 llm:
   provider: nvidia              # nvidia | huggingface | openai | anthropic
@@ -38,8 +35,8 @@ llm:
 skills:
   skills_dir: .kartrix/skills
 
-memory:
-  db_path: .kartrix/memory/memory.db
+memory:                         # conversation checkpoints live in Postgres
+  session_file: .kartrix/current_session
   summarize_at_tokens: 4000
   keep_last_messages: 20
 

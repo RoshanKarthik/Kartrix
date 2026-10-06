@@ -1,8 +1,11 @@
 import uuid
 from pathlib import Path
 
+from sqlalchemy.dialects.postgresql import insert
 
 from kartrix.config import settings
+from kartrix.db.engine import session_scope
+from kartrix.db.models import Session
 from kartrix.observability.logger import get_logger
 
 
@@ -33,7 +36,7 @@ def validate_session_id(session_id: str) -> str:
 
 
 def _session_file() -> Path:
-   return Path(settings.memory.db_path).parent / "current_session"
+   return Path(settings.memory.session_file)
 
 
 def get_current_session() -> str:
@@ -67,3 +70,12 @@ def switch_session(session_id: str) -> str:
    session_file.write_text(session_id)
    logger.info("Switched session", extra={"session_id": session_id})
    return session_id
+
+
+async def record_session(session_id: str, repo_path: str) -> None:
+   """Make sure the session has a row in Postgres (projects link to it); touch updated_at."""
+   session_id = validate_session_id(session_id)
+   stmt = insert(Session).values(id=uuid.UUID(session_id), repo_path=repo_path)
+   stmt = stmt.on_conflict_do_update(index_elements=[Session.id], set_={"updated_at": stmt.excluded.updated_at})
+   async with session_scope() as s:
+       await s.execute(stmt)

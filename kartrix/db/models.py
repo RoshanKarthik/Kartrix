@@ -1,4 +1,5 @@
-"""Core Postgres schema: sessions, projects, tasks, approvals, audit_log, code index.
+"""Core Postgres schema: sessions, projects, tasks, approvals, audit_log, code index,
+LangGraph checkpoints.
 
 Schema changes go through Alembic (``uv run alembic revision --autogenerate``);
 never create tables with ``metadata.create_all`` outside tests.
@@ -17,7 +18,9 @@ from sqlalchemy import (
     Identity,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
+    PrimaryKeyConstraint,
     String,
     Text,
     UniqueConstraint,
@@ -284,3 +287,48 @@ class CodeChunk(Base):
     tsv: Mapped[Any] = mapped_column(TSVECTOR, nullable=False)
 
     file: Mapped[CodeFile] = relationship(back_populates="chunks")
+
+
+class Checkpoint(Base):
+    """A LangGraph checkpoint (see ``kartrix.memory.checkpointer``). ``thread_id`` is the session id.
+
+    The checkpoint itself is an opaque blob from LangGraph's serializer (``type`` names the
+    encoding); metadata is JSONB so ``alist(filter=...)`` can use containment queries.
+    """
+
+    __tablename__ = "checkpoints"
+    __table_args__ = (
+        PrimaryKeyConstraint("thread_id", "checkpoint_ns", "checkpoint_id", name="pk_checkpoints"),
+    )
+
+    thread_id: Mapped[str] = mapped_column(Text, nullable=False)
+    checkpoint_ns: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    checkpoint_id: Mapped[str] = mapped_column(Text, nullable=False)
+    parent_checkpoint_id: Mapped[str | None] = mapped_column(Text)
+    type: Mapped[str | None] = mapped_column(Text)
+    checkpoint: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", nullable=False, server_default=text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime] = _created_at()
+
+
+class CheckpointWrite(Base):
+    """Pending writes of a task attached to a checkpoint (LangGraph ``put_writes``)."""
+
+    __tablename__ = "checkpoint_writes"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "thread_id", "checkpoint_ns", "checkpoint_id", "task_id", "idx", name="pk_checkpoint_writes"
+        ),
+    )
+
+    thread_id: Mapped[str] = mapped_column(Text, nullable=False)
+    checkpoint_ns: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    checkpoint_id: Mapped[str] = mapped_column(Text, nullable=False)
+    task_id: Mapped[str] = mapped_column(Text, nullable=False)
+    idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    channel: Mapped[str] = mapped_column(Text, nullable=False)
+    type: Mapped[str | None] = mapped_column(Text)
+    value: Mapped[bytes | None] = mapped_column(LargeBinary)
+    task_path: Mapped[str] = mapped_column(Text, nullable=False, server_default="")

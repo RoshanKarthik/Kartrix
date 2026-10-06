@@ -59,14 +59,11 @@ class EmbeddingsSettings(_Section):
 
 
 class SemanticCacheSettings(_Section):
+    # The connection URL (with password) comes from the REDIS_URL env var, never from here.
     enabled: bool = True
-    redis_url: str = "redis://localhost:6379"
+    namespace: str = Field("kartrix", pattern=r"^[a-z0-9_-]{1,32}$")  # prefix for every key + index name
     threshold: float = Field(0.85, ge=0.0, le=1.0)
     ttl: int = Field(86400, gt=0)
-
-
-class TasksSettings(_Section):
-    db_path: str = ".kartrix/tasks.db"
 
 
 LLMProvider = Literal["nvidia", "huggingface", "openai", "anthropic"]
@@ -99,7 +96,7 @@ class SkillsSettings(_Section):
 
 
 class MemorySettings(_Section):
-    db_path: str = ".kartrix/memory/memory.db"
+    session_file: str = ".kartrix/current_session"  # id of the active session (thread)
     summarize_at_tokens: int = Field(4000, gt=0)
     keep_last_messages: int = Field(20, gt=0)
 
@@ -178,7 +175,6 @@ class Settings(BaseSettings):
 
     embeddings: EmbeddingsSettings = EmbeddingsSettings()
     semantic_cache: SemanticCacheSettings = SemanticCacheSettings()
-    tasks: TasksSettings = TasksSettings()
     llm: LLMSettings = LLMSettings()
     skills: SkillsSettings = SkillsSettings()
     memory: MemorySettings = MemorySettings()

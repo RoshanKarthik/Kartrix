@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from rich.console import Console
 
-from kartrix.tasks.task_store import SQLiteTaskStore
 from kartrix.observability.logger import get_logger
+from kartrix.tasks.task_store import TaskStore
 
 logger = get_logger(__name__)
 console = Console()
@@ -18,50 +18,26 @@ class RecoveryManager:
     No heartbeat or timing check is needed.
     """
 
-    def __init__(self, store: SQLiteTaskStore) -> None:
+    def __init__(self, store: TaskStore) -> None:
         self.store = store
 
-    def recover(self, project_id: str) -> int:
+    async def recover(self, project_id: str) -> int:
         """
         Reset every task still marked IN_PROGRESS for this project.
           - retries left  → reset to PENDING
           - no retries    → mark FAILED
         Returns number of tasks processed.
         """
-        with self.store._conn() as conn:
-            crashed = conn.execute(
-                """SELECT id, title, retry_count, max_retries
-                   FROM tasks
-                   WHERE project_id = ? AND status = 'in_progress'""",
-                (project_id,)
-            ).fetchall()
+        crashed = await self.store.recover_crashed(project_id)
+        for task in crashed:
+            if task["status"] == "pending":
+                console.print(
+                    f"[yellow]🔄 Recovered:[/yellow] {task['key']} ({task['title']}) "
+                    f"→ PENDING (retry {task['retry_count']}/{task['max_retries']})"
+                )
+            else:
+                console.print(f"[red]❌ Max retries exhausted:[/red] {task['key']} → FAILED")
 
-            for task in crashed:
-                if task["retry_count"] < task["max_retries"]:
-                    conn.execute(
-                        """UPDATE tasks
-                           SET status      = 'pending',
-                               started_at  = NULL,
-                               retry_count = retry_count + 1,
-                               error       = 'CRASH: process died mid-execution'
-                           WHERE id = ?""",
-                        (task["id"],)
-                    )
-                    console.print(
-                        f"[yellow]🔄 Recovered:[/yellow] {task['id']} ({task['title']}) "
-                        f"→ PENDING (retry {task['retry_count'] + 1}/{task['max_retries']})"
-                    )
-                else:
-                    conn.execute(
-                        """UPDATE tasks
-                           SET status = 'failed',
-                               error  = 'CRASH: max retries exceeded after repeated crashes'
-                           WHERE id = ?""",
-                        (task["id"],)
-                    )
-                    console.print(f"[red]❌ Max retries exhausted:[/red] {task['id']} → FAILED")
-
-        count = len(crashed)
-        if count:
-            console.print(f"[dim]Recovery complete: {count} task(s) processed.[/dim]\n")
-        return count
+        if crashed:
+            console.print(f"[dim]Recovery complete: {len(crashed)} task(s) processed.[/dim]\n")
+        return len(crashed)
