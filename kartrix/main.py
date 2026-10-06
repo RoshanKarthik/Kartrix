@@ -4,7 +4,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 from kartrix.config import settings
-from kartrix.context.indexers.factory import get_indexer, get_index_inspector
+from kartrix.context.indexers.pg_index import index_repo, show_index
 from kartrix.llm.factory import get_llm, get_embedder
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from kartrix.agent.factory import build_agent
@@ -12,6 +12,7 @@ from kartrix.memory.short_term import get_checkpointer_db_path
 from kartrix.agent.orchestrator import handle_query
 from kartrix.memory.session import InvalidSessionIdError, get_current_session, new_session, switch_session
 from kartrix.cache.semantic_cache import build_semantic_cache, get_repo_domain
+from kartrix.db.engine import dispose_engine
 from kartrix.observability.logger import get_logger
 
 from kartrix.tasks.orchestrator import handle_plan_command
@@ -22,11 +23,13 @@ console = Console()
 logger = get_logger(__name__)
 
 
-def get_or_create_index():
+async def update_index() -> None:
+    """Incrementally sync the Postgres code index with the current directory."""
     repo_path = str(Path.cwd())
     logger.info(f"Checking index for: {repo_path}")
     console.print(f"[dim]Checking index for {repo_path}...[/dim]")
-    return get_indexer()(repo_path)
+    stats = await index_repo(repo_path)
+    console.print(f"[dim]Index: {stats}[/dim]")
 
 
 async def initialize(checkpointer):
@@ -37,7 +40,7 @@ async def initialize(checkpointer):
     console.print(f"[dim]Embedder: {settings.embeddings.provider} / {settings.embeddings.model}[/dim]")
 
     repo_path = str(Path.cwd())
-    index = get_or_create_index()
+    await update_index()
 
     semantic_cache = await build_semantic_cache()
     cache_domain = get_repo_domain(repo_path) if semantic_cache else None
@@ -48,18 +51,16 @@ async def initialize(checkpointer):
 
     loop = asyncio.get_running_loop()
 
-    def _invalidate_cache_on_change() -> None:
+    async def _invalidate_cache_on_change() -> None:
         if semantic_cache is not None:
-            asyncio.run_coroutine_threadsafe(
-                semantic_cache.invalidate_domain(cache_domain), loop
-            )
+            await semantic_cache.invalidate_domain(cache_domain)
 
-    observer   = start_watcher(repo_path, on_change=_invalidate_cache_on_change)
+    observer   = start_watcher(repo_path, loop, on_change=_invalidate_cache_on_change)
     agent      = await build_agent(checkpointer)
     session_id = get_current_session()
     console.print(f"[dim]Session: {session_id}[/dim]")
     console.print(f"[green]✓ Ready[/green]\n")
-    return llm, embedder, index, agent, session_id, observer, semantic_cache, cache_domain
+    return llm, embedder, agent, session_id, observer, semantic_cache, cache_domain
 
 
 async def _run_async():
@@ -67,7 +68,7 @@ async def _run_async():
     console.print("\n[bold blue]Kartrix[/bold blue] — RAG-powered code assistant")
 
     async with AsyncSqliteSaver.from_conn_string(get_checkpointer_db_path()) as checkpointer:
-        llm, embedder, index, agent, session_id, observer, semantic_cache, cache_domain = await initialize(checkpointer)
+        llm, embedder, agent, session_id, observer, semantic_cache, cache_domain = await initialize(checkpointer)
         console.print("Type [bold]'/exit'[/bold] to quit\n")
 
         try:
@@ -91,7 +92,7 @@ async def _run_async():
                     console.print(response)
                 elif user_input == "/reindex":
                     console.print("[dim]Re-indexing current directory...[/dim]")
-                    get_or_create_index()
+                    await update_index()
                     if semantic_cache is not None:
                         await semantic_cache.invalidate_domain(cache_domain)
                         console.print("[dim]Semantic cache invalidated for this repo.[/dim]")
@@ -111,7 +112,7 @@ async def _run_async():
                     console.print(f"[dim]Current session: {session_id}[/dim]")
                 elif user_input == "/show_index":
                     logger.info("Showing index")
-                    get_index_inspector()(index)
+                    await show_index(Path.cwd())
                 elif user_input.startswith("/plan "):
                     goal = user_input.removeprefix("/plan ").strip()
                     logger.info(f"Plan command received: {goal}")
@@ -131,6 +132,7 @@ async def _run_async():
                     console.print("  [bold]/task_status[/bold]             — show task progress for active project")
         finally:
             stop_watcher(observer)
+            await dispose_engine()
 
 def run():
     asyncio.run(_run_async())

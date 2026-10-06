@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import platform
 import threading
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 
-from kartrix.context.indexers.code_parser import ALL_EXTENSIONS
+from kartrix.context.discovery import RepoFilter
 from kartrix.observability.logger import get_logger
 
 logger = get_logger(__name__)
@@ -19,11 +21,15 @@ logger = get_logger(__name__)
 # A watchdog Observer runs in a background daemon thread watching the
 # project directory recursively. When a file changes, the OS fires an
 # event → _CodebaseEventHandler receives it → debounces it (editors
-# emit multiple events per save) → calls index_single_file() or
-# remove_file_from_index() from semantic_chroma.py.
+# emit multiple events per save) → schedules index_file() / remove_file()
+# from pg_index.py on the app's asyncio loop (the DB engine lives there).
 #
-# This keeps ChromaDB up-to-date in real time so /ask queries reflect
-# changes made by /plan tasks or manual edits without needing a restart.
+# Only paths that pass the repo's .gitignore rules are handled. Editing a
+# .gitignore reloads the rules and runs a full incremental index_repo(),
+# so newly ignored files drop out and newly included ones get indexed.
+#
+# This keeps the Postgres index up-to-date in real time so /ask queries
+# reflect changes made by /plan tasks or manual edits without a restart.
 # ------------------------------------------------------------------
 
 # Editors often fire several events for a single save (write + chmod +
@@ -51,8 +57,9 @@ class _CodebaseEventHandler(FileSystemEventHandler):
     """
     Translates raw watchdog filesystem events into debounced indexer calls.
 
-    Only reacts to files with extensions the indexer understands (ALL_EXTENSIONS
-    from code_parser). Directory events and unrecognised extensions are ignored.
+    Only reacts to files the RepoFilter accepts (.gitignore + config excludes +
+    known extensions). Deletes only need to pass the rules — the file is gone, so
+    size/binary checks can't run, and removing a never-indexed path is a no-op.
 
     Debounce pattern:
       Each file gets its own threading.Timer. If a new event arrives for the
@@ -61,21 +68,21 @@ class _CodebaseEventHandler(FileSystemEventHandler):
       _DEBOUNCE_SECONDS.
     """
 
-    def __init__(self, on_change=None) -> None:
+    def __init__(self, repo_path: str, loop: asyncio.AbstractEventLoop,
+                 on_change: Callable[[], Awaitable[None]] | None = None) -> None:
+        self._root = repo_path
+        self._loop = loop
+        self._on_change = on_change
+        self._filter = RepoFilter.load(repo_path)
         # {filepath: threading.Timer} — one pending debounced call per file.
         # Timers are daemon threads so they don't block process exit.
         self._timers: dict[str, threading.Timer] = {}
-        self._on_change = on_change
-
-    def _is_indexable(self, path: str) -> bool:
-        """True if the file extension is one the indexer knows how to parse."""
-        return Path(path).suffix.lower() in ALL_EXTENSIONS
 
     def _schedule(self, action: str, filepath: str) -> None:
         """
         Schedule a debounced indexer call for filepath.
         Cancels any already-pending call for the same file first.
-        action is either "upsert" (create/modify) or "delete".
+        action is "upsert" (create/modify), "delete" or "rescan" (.gitignore changed).
         """
         existing = self._timers.pop(filepath, None)
         if existing:
@@ -87,49 +94,61 @@ class _CodebaseEventHandler(FileSystemEventHandler):
         self._timers[filepath] = timer
 
     def _run(self, action: str, filepath: str) -> None:
-        """
-        Actual indexer call, executed after the debounce window expires.
-
-        Imported inside the method to avoid a circular import at module load
-        time (watcher ← semantic_chroma ← watcher would form a cycle).
-        """
+        """Runs on the timer thread: hand the work to the asyncio loop and wait for it."""
         self._timers.pop(filepath, None)
-        from kartrix.context.indexers.semantic_chroma import (
-            index_single_file,
-            remove_file_from_index,
-        )
-        if action == "delete":
-            remove_file_from_index(filepath)
+        future = asyncio.run_coroutine_threadsafe(self._apply(action, filepath), self._loop)
+        try:
+            future.result()
+        except Exception as e:  # never kill the watcher over one file
+            logger.error("Watcher reindex failed", extra={"path": filepath, "action": action, "error": str(e)})
+
+    async def _apply(self, action: str, filepath: str) -> None:
+        # Imported here so importing the watcher doesn't pull in the DB/LLM stack.
+        from kartrix.context.indexers.pg_index import index_file, index_repo, remove_file
+
+        if action == "rescan":
+            self._filter = RepoFilter.load(self._root)
+            stats = await index_repo(self._root)
+            logger.info("Rules changed, repo re-scanned", extra={"stats": str(stats)})
+        elif action == "delete":
+            await remove_file(self._root, filepath)
         else:
-            index_single_file(filepath)
+            await index_file(self._root, filepath, self._filter)
         if self._on_change is not None:
-            self._on_change()
+            await self._on_change()
+
+    def _handle(self, path: str, deleted: bool = False) -> None:
+        if Path(path).name == ".gitignore":
+            self._schedule("rescan", self._root)  # keyed on the root: many edits → one rescan
+        elif deleted:
+            if self._filter.passes_rules(path):
+                self._schedule("delete", path)
+        elif self._filter.is_indexable(path):
+            self._schedule("upsert", path)
 
     # ── watchdog event hooks ──────────────────────────────────────────
 
     def on_created(self, event: FileSystemEvent) -> None:
-        if not event.is_directory and self._is_indexable(event.src_path):
-            self._schedule("upsert", event.src_path)
+        if not event.is_directory:
+            self._handle(event.src_path)
 
     def on_modified(self, event: FileSystemEvent) -> None:
-        if not event.is_directory and self._is_indexable(event.src_path):
-            self._schedule("upsert", event.src_path)
+        if not event.is_directory:
+            self._handle(event.src_path)
 
     def on_deleted(self, event: FileSystemEvent) -> None:
-        if not event.is_directory and self._is_indexable(event.src_path):
-            self._schedule("delete", event.src_path)
+        if not event.is_directory:
+            self._handle(event.src_path, deleted=True)
 
     def on_moved(self, event: FileSystemEvent) -> None:
         # A rename/move = delete the old path + upsert the new path.
-        # Both paths are checked independently since either could be non-indexable.
         if not event.is_directory:
-            if self._is_indexable(event.src_path):
-                self._schedule("delete", event.src_path)
-            if self._is_indexable(event.dest_path):
-                self._schedule("upsert", event.dest_path)
+            self._handle(event.src_path, deleted=True)
+            self._handle(event.dest_path)
 
 
-def start_watcher(repo_path: str, on_change=None) -> Observer:
+def start_watcher(repo_path: str, loop: asyncio.AbstractEventLoop,
+                  on_change: Callable[[], Awaitable[None]] | None = None) -> Observer:
     """
     Start a filesystem observer on repo_path in a background daemon thread.
 
@@ -137,13 +156,13 @@ def start_watcher(repo_path: str, on_change=None) -> Observer:
     Daemon=True means the thread won't prevent the process from exiting
     if the user hits Ctrl+C without going through /exit.
 
-    on_change, if given, is called (with no args) after every debounced
-    index update - used to invalidate the semantic cache when the
-    underlying codebase changes.
+    Index updates run as coroutines on ``loop`` (the app's event loop, where the
+    database engine lives). on_change, if given, is awaited after every update -
+    used to invalidate the semantic cache when the codebase changes.
 
     Returns the Observer so the caller can call stop_watcher() on shutdown.
     """
-    handler  = _CodebaseEventHandler(on_change=on_change)
+    handler  = _CodebaseEventHandler(repo_path, loop, on_change=on_change)
     observer = _get_observer()
     observer.schedule(handler, repo_path, recursive=True)
     observer.daemon = True

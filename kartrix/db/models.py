@@ -1,4 +1,4 @@
-"""Core Postgres schema: sessions, projects, tasks, approvals, audit_log.
+"""Core Postgres schema: sessions, projects, tasks, approvals, audit_log, code index.
 
 Schema changes go through Alembic (``uv run alembic revision --autogenerate``);
 never create tables with ``metadata.create_all`` outside tests.
@@ -24,7 +24,8 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from pgvector.sqlalchemy import HALFVEC
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # Deterministic constraint names so Alembic migrations are stable and reviewable.
@@ -227,3 +228,59 @@ class AuditLog(Base):
     target: Mapped[str | None] = mapped_column(Text)
     outcome: Mapped[str] = mapped_column(String(32), nullable=False)  # allowed | denied | error | ...
     details: Mapped[dict[str, Any]] = mapped_column(default=dict, server_default=text("'{}'::jsonb"))
+
+
+# Fixed by the column type: changing the embedding model's size needs a migration + full reindex.
+# halfvec (not vector) because pgvector's HNSW index caps plain vectors at 2000 dims.
+EMBEDDING_DIMS = 2048
+
+
+class CodeFile(Base):
+    """One indexed file of a repo. Its hash/mtime drive incremental re-indexing."""
+
+    __tablename__ = "code_files"
+    __table_args__ = (UniqueConstraint("repo_root", "path", name="uq_code_files_repo_root_path"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    repo_root: Mapped[str] = mapped_column(Text, nullable=False)  # absolute repo path
+    path: Mapped[str] = mapped_column(Text, nullable=False)  # POSIX path relative to repo_root
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    mtime_ns: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String(200), nullable=False)
+    chunker_version: Mapped[int] = mapped_column(Integer, nullable=False)  # bump → full re-chunk
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    indexed_at: Mapped[datetime] = _created_at()
+
+    chunks: Mapped[list["CodeChunk"]] = relationship(back_populates="file", passive_deletes=True)
+
+
+class CodeChunk(Base):
+    """A function/class/text window of a file, with its embedding and full-text vector."""
+
+    __tablename__ = "code_chunks"
+    __table_args__ = (
+        Index(
+            "ix_code_chunks_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "halfvec_cosine_ops"},
+        ),
+        Index("ix_code_chunks_tsv", "tsv", postgresql_using="gin"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    file_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("code_files.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    # Duplicated from code_files so the vector search can filter without a join.
+    repo_root: Mapped[str] = mapped_column(Text, index=True, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # function | class | block
+    start_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[Any] = mapped_column(HALFVEC(EMBEDDING_DIMS), nullable=False)
+    tsv: Mapped[Any] = mapped_column(TSVECTOR, nullable=False)
+
+    file: Mapped[CodeFile] = relationship(back_populates="chunks")

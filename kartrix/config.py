@@ -104,22 +104,21 @@ class MemorySettings(_Section):
     keep_last_messages: int = Field(20, gt=0)
 
 
-class ChromaSettings(_Section):
-    persist_dir: str = ".kartrix/chromadb/"
-    collection_name: str = "codebase"
+class IndexSettings(_Section):
+    max_file_kb: int = Field(512, gt=0)          # bigger files are skipped (generated/minified code)
+    embed_batch_size: int = Field(32, gt=0)      # chunks per embeddings request
+    # gitignore-style patterns always skipped, on top of the repo's own .gitignore files.
+    exclude: list[str] = Field(default_factory=lambda: [
+        ".git/", ".kartrix/", ".venv/", "venv/", "node_modules/", "__pycache__/",
+        ".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa*", "id_ed25519*",
+    ])
 
 
-class RAGSettings(_Section):
-    mode: Literal["semantic", "hybrid"] = "semantic"
-
-
-class VectorStoreSettings(_Section):
-    provider: Literal["chroma", "qdrant"] = "chroma"
-    retrieval_mode: Literal["dense", "sparse", "hybrid"] = "dense"
-
-
-class QdrantSettings(_Section):
-    collection_name: str = "kartrix"
+class RetrievalSettings(_Section):
+    mode: Literal["hybrid", "dense", "sparse"] = "hybrid"  # hybrid = pgvector + full-text, fused with RRF
+    top_k: int = Field(5, gt=0)
+    candidates: int = Field(40, gt=0)            # results taken from each retriever before fusion
+    rrf_k: int = Field(60, gt=0)                 # reciprocal-rank-fusion constant
 
 
 class DatabaseSettings(_Section):
@@ -183,10 +182,8 @@ class Settings(BaseSettings):
     llm: LLMSettings = LLMSettings()
     skills: SkillsSettings = SkillsSettings()
     memory: MemorySettings = MemorySettings()
-    chromadb: ChromaSettings = ChromaSettings()
-    rag: RAGSettings = RAGSettings()
-    vector_store: VectorStoreSettings = VectorStoreSettings()
-    qdrant: QdrantSettings = QdrantSettings()
+    index: IndexSettings = IndexSettings()
+    retrieval: RetrievalSettings = RetrievalSettings()
     database: DatabaseSettings = DatabaseSettings()
     logging: LoggingSettings = LoggingSettings()
 
