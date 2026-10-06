@@ -25,6 +25,7 @@ from kartrix.config import settings
 from kartrix.context.discovery import RepoFilter, iter_files
 from kartrix.observability.logger import get_logger
 from kartrix.security.permissions import PermissionDeniedError, ensure_writes_allowed
+from kartrix.security.secrets import contains_placeholder, redact
 from kartrix.security.workspace import CASE_INSENSITIVE, WorkspaceError, get_workspace
 
 logger = get_logger(__name__)
@@ -214,6 +215,13 @@ def write_file(file_path: str, content: str) -> str:
     if len(data) > _max_bytes():
         return f"Error: content too large ({len(data)} bytes, max {_max_bytes()})"
     existed = path.exists()
+    if existed and contains_placeholder(content):
+        old = _load_text(path, rel)
+        if redact(old) != old:  # the model only ever saw this file with its secrets masked
+            return (
+                f"Error: {rel} contains secrets that were shown to you as [REDACTED:...]; overwriting it would "
+                "destroy them. Use edit_file on the other parts instead."
+            )
     _atomic_write(path, data)
     return f"{'Overwrote' if existed else 'Created'} {rel} ({len(data)} bytes)"
 
@@ -264,11 +272,18 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
         return "Error: old_string and new_string are identical"
     text = _load_text(path, rel)
 
+    if contains_placeholder(new_string) and not contains_placeholder(old_string):
+        return "Error: new_string contains a [REDACTED:...] placeholder — redacted secrets can't be written back"
     count = text.count(old_string)
     if count == 0 and "\r\n" in text and "\n" in old_string and "\r\n" not in old_string:
         # The model writes "\n"; the file uses Windows line endings. Keep the file's style.
         old_string, new_string = old_string.replace("\n", "\r\n"), new_string.replace("\n", "\r\n")
         count = text.count(old_string)
+    if count == 0 and contains_placeholder(old_string):
+        return (
+            f"Error: old_string includes a redacted secret ([REDACTED:...]) that isn't literally in {rel}; "
+            "edit around that line instead of including it"
+        )
     if count == 0:
         hint = (
             " — remove the line-number prefixes copied from read_file"

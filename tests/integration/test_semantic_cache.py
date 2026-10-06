@@ -57,3 +57,14 @@ async def test_invalidate_only_touches_one_repo(cache: SemanticCache) -> None:
     await cache.invalidate_domain(a)
     assert await cache.get("question one", a, "m") is None
     assert await cache.get("question one", b, "m") == "B"
+
+
+async def test_secrets_never_reach_the_cache(cache: SemanticCache) -> None:
+    token = "ghp_" + "a1B2c3D4e5" * 4
+    domain = get_repo_domain("D:/repoS")
+    await cache.put(f"why is {token} rejected?", f"Because {token} expired.", domain=domain, model="m", ttl=60)
+    stored = [await cache.client.hgetall(k) async for k in cache.client.scan_iter(match=f"{NS}:*")]
+    assert len(stored) == 1
+    text = b" ".join(v for k, v in stored[0].items() if k != b"query_vector")
+    assert token.encode() not in text and b"[REDACTED:github-token]" in text
+    assert await cache.get(f"why is {token} rejected?", domain, "m") == "Because [REDACTED:github-token] expired."

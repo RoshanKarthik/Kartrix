@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from sqlalchemy import ColumnClause, Text, cast, delete, func, insert, literal_column, select, update
@@ -30,13 +30,17 @@ from kartrix.db.engine import session_scope
 from kartrix.db.models import EMBEDDING_DIMS, CodeChunk, CodeFile
 from kartrix.llm.factory import get_embedder
 from kartrix.observability.logger import get_logger
+from kartrix.security.secrets import RULES_VERSION, redact_with_count
 
 logger = get_logger(__name__)
 
 # Bump when chunking/embedding-text logic changes: every file is then re-chunked and
 # re-embedded even if its content didn't change.
 # v2: tree-sitter byte offsets sliced correctly (v1 shifted chunks after non-ASCII text).
-CHUNKER_VERSION = 2
+# v3: secrets are redacted from chunk content before embedding/storing (B6).
+CHUNKER_VERSION = 3
+# Stored per file: changing the chunker *or* the secret-redaction rules re-indexes everything.
+INDEX_VERSION = CHUNKER_VERSION * 1000 + RULES_VERSION
 
 # One indexing run at a time per process (startup, /reindex, watcher and /plan can overlap).
 _lock = asyncio.Lock()
@@ -64,12 +68,14 @@ class IndexStats:
     deleted: int = 0
     empty: int = 0  # no chunks (empty or nothing parseable)
     chunks: int = 0
+    secrets: int = 0  # secrets redacted before embedding
 
     def __str__(self) -> str:
-        return (
+        text = (
             f"added {self.added}, changed {self.changed}, deleted {self.deleted}, "
             f"unchanged {self.unchanged}, empty {self.empty} - {self.chunks} chunks embedded"
         )
+        return text + (f", {self.secrets} secrets redacted" if self.secrets else "")
 
 
 @dataclass
@@ -80,6 +86,7 @@ class _Prepared:
     mtime_ns: int
     is_new: bool
     chunks: list[ParsedChunk] = field(default_factory=list)
+    secrets: int = 0
 
 
 def repo_key(repo_root: str | Path) -> str:
@@ -120,9 +127,17 @@ def _read_and_parse(root: Path, rel: str, is_new: bool, known_sha: str | None) -
         return None
     source = data.decode("utf-8", errors="ignore").replace("\x00", "")
     try:
-        prep.chunks = parse_file(str(path), source=source)
+        chunks = parse_file(str(path), source=source)
     except (SyntaxError, ValueError) as e:  # empty or unsupported file: stored with 0 chunks
         logger.info("File produced no chunks", extra={"path": rel, "reason": str(e)})
+        return prep
+    # Secrets never reach the embedding API, the database or search results (B6).
+    for chunk in chunks:
+        content, found = redact_with_count(chunk.content)
+        prep.chunks.append(replace(chunk, content=content) if found else chunk)
+        prep.secrets += found
+    if prep.secrets:
+        logger.info("Secrets redacted before indexing", extra={"path": rel, "count": prep.secrets})
     return prep
 
 
@@ -158,7 +173,7 @@ async def _write_group(root_key: str, group: list[_Prepared], model: str) -> int
                         size=p.size,
                         mtime_ns=p.mtime_ns,
                         embedding_model=model,
-                        chunker_version=CHUNKER_VERSION,
+                        chunker_version=INDEX_VERSION,
                         chunk_count=len(p.chunks),
                     )
                     .returning(CodeFile.id)
@@ -216,7 +231,7 @@ async def _index(root: Path, rels: list[str], stats: IndexStats, *, prune: bool)
     for rel in rels:
         k = known.get(rel)
         # Only a row written by the same model + chunker can be reused as-is.
-        reusable = k if k is not None and k.embedding_model == model and k.chunker_version == CHUNKER_VERSION else None
+        reusable = k if k is not None and k.embedding_model == model and k.chunker_version == INDEX_VERSION else None
         try:
             st = (root / rel).stat()
             if reusable is not None and reusable.size == st.st_size and reusable.mtime_ns == st.st_mtime_ns:
@@ -240,6 +255,7 @@ async def _index(root: Path, rels: list[str], stats: IndexStats, *, prune: bool)
             stats.added += 1
         else:
             stats.changed += 1
+        stats.secrets += prep.secrets
         if not prep.chunks:
             stats.empty += 1
         group.append(prep)

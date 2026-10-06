@@ -14,6 +14,7 @@ from redisvl.redis.utils import array_to_buffer
 from kartrix.config import settings
 from kartrix.llm.factory import get_embedder
 from kartrix.observability.logger import get_logger
+from kartrix.security.secrets import redact
 
 logger = get_logger(__name__)
 
@@ -104,6 +105,7 @@ class SemanticCache:
 
     async def get(self, query: str, domain: str, model: str) -> str | None:
         """Look up a cached response. Returns None on miss."""
+        query = redact(query)
         hit = await self._top_match(query, domain=domain, model=model)
         if hit is None:
             return None
@@ -115,7 +117,8 @@ class SemanticCache:
         return None
 
     async def put(self, query: str, response: str, domain: str, model: str, ttl: int) -> None:
-        """Store a (query, response) pair."""
+        """Store a (query, response) pair; secrets are redacted from both first."""
+        query, response = redact(query), redact(response)
         vector = await self._embed(query)
         # Key = <ns>:cache:<domain>:<hash(model, query)> — the same question asked in another
         # repo or of another model must not overwrite this entry.

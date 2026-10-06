@@ -5,7 +5,8 @@ All ``kartrix.*`` loggers write one JSON object per line (or plain text when
 so the interactive REPL stays readable. Third-party libraries are held at WARNING.
 
 Extra fields passed via ``logger.info("msg", extra={"session_id": sid})`` are
-included as top-level keys in the JSON record.
+included as top-level keys in the JSON record. Every formatted line — message, extras,
+tracebacks — goes through secret redaction (``kartrix.security.secrets``) first.
 """
 
 import json
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from kartrix.config import settings
+from kartrix.security.secrets import redact
 
 ROOT_LOGGER = "kartrix"
 
@@ -45,13 +47,20 @@ class JSONFormatter(logging.Formatter):
             payload["exc_info"] = self.formatException(record.exc_info)
         if record.stack_info:
             payload["stack_info"] = self.formatStack(record.stack_info)
-        return json.dumps(payload, default=str, ensure_ascii=False)
+        return redact(json.dumps(payload, default=str, ensure_ascii=False))
+
+
+class RedactingFormatter(logging.Formatter):
+    """Plain-text formatter that redacts secrets."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact(super().format(record))
 
 
 def _make_formatter() -> logging.Formatter:
     if settings.logging.format == "json":
         return JSONFormatter()
-    return logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    return RedactingFormatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 
 
 def setup_logging() -> None:

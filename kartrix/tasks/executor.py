@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from kartrix.llm.factory import get_chat_model, get_model_middleware
 from kartrix.observability.logger import get_logger
+from kartrix.security.audit import AuditMiddleware
 from kartrix.tools.filesystem_tools import READ_TOOLS, WRITE_TOOLS, edit_file, write_file
 from kartrix.tools.terminal_tools import run_command
 
@@ -146,7 +147,7 @@ async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None) -
         llm,
         tools=tools,
         system_prompt=system_prompt,
-        middleware=get_model_middleware(temperature=0, max_tokens=3000),
+        middleware=[*get_model_middleware(temperature=0, max_tokens=3000), AuditMiddleware()],
     )
 
     # The project directory may be empty on first run — tell the agent to create files

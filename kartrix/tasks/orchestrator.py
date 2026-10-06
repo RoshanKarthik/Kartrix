@@ -7,6 +7,7 @@ from rich.console import Console
 
 from kartrix.context.indexers.pg_index import index_repo
 from kartrix.observability.logger import get_logger
+from kartrix.security.audit import audit_scope
 from kartrix.tasks.approval import present_plan_for_approval
 from kartrix.tasks.executor import run_subtask_agent
 from kartrix.tasks.planner import create_plan
@@ -90,7 +91,8 @@ class TaskOrchestrator:
             # Fetch what dependency tasks actually produced and inject into the agent.
             dep_outputs = await self.store.get_dep_results(project_id, task["depends_on"])
 
-            result = await run_subtask_agent(task, dep_outputs=dep_outputs)
+            with audit_scope(project_id=project_id, task_key=task["id"]):
+                result = await run_subtask_agent(task, dep_outputs=dep_outputs)
             await self.store.complete_task(project_id, task["id"], result)
             console.print(f"[green]✅ Completed:[/green] [{task['id']}] {task['title']}")
 

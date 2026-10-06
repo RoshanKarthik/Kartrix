@@ -3,6 +3,7 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.prompt import Prompt
+from rich.table import Table
 
 from kartrix.agent.factory import build_agent
 from kartrix.agent.orchestrator import handle_query
@@ -21,6 +22,7 @@ from kartrix.memory.session import (
 )
 from kartrix.memory.short_term import get_checkpointer
 from kartrix.observability.logger import get_logger
+from kartrix.security import audit
 from kartrix.security.permissions import MODES, get_mode, set_mode
 from kartrix.security.workspace import set_workspace
 from kartrix.tasks.orchestrator import handle_plan_command
@@ -37,6 +39,29 @@ async def update_index() -> None:
     console.print(f"[dim]Checking index for {repo_path}...[/dim]")
     stats = await index_repo(repo_path)
     console.print(f"[dim]Index: {stats}[/dim]")
+
+
+async def show_audit(session_id: str, arg: str) -> None:
+    """Print the newest audit rows of the current session."""
+    limit = int(arg) if arg.isdigit() else 20
+    rows = await audit.recent(session_id, limit)
+    if not rows:
+        console.print("[dim]No audit entries for this session yet.[/dim]")
+        return
+    table = Table(title=f"Audit log — last {len(rows)} entries")
+    for col in ("time", "action", "target", "outcome", "ms"):
+        table.add_column(col)
+    colors = {"ok": "green", "denied": "red", "error": "red", "needs_approval": "yellow", "declined": "yellow"}
+    for row in reversed(rows):
+        color = colors.get(row.outcome, "white")
+        table.add_row(
+            row.ts.astimezone().strftime("%H:%M:%S"),
+            row.action,
+            (row.target or "")[:60],
+            f"[{color}]{row.outcome}[/{color}]",
+            str(row.details.get("duration_ms", "")),
+        )
+    console.print(table)
 
 
 async def initialize(checkpointer):
@@ -135,13 +160,25 @@ async def _run_async():
                 await handle_plan_command(goal, session_id)
             elif user_input == "/task_status":
                 await show_task_status()
+            elif user_input == "/audit" or user_input.startswith("/audit "):
+                await show_audit(session_id, user_input.removeprefix("/audit").strip())
             elif user_input == "/mode" or user_input.startswith("/mode "):
                 target = user_input.removeprefix("/mode").strip()
                 if target:
                     try:
+                        previous = get_mode()
                         set_mode(target)
                     except ValueError as e:
                         console.print(f"[red]{e}[/red]")
+                    else:
+                        await audit.record(
+                            actor="user",
+                            action="permissions.mode",
+                            target=target,
+                            outcome="ok",
+                            session_id=session_id,
+                            details={"previous": previous},
+                        )
                 console.print(f"[dim]Permission mode: {get_mode()} (available: {', '.join(MODES)})[/dim]")
             else:
                 logger.warning(f"Unknown command received: {user_input}")
@@ -155,6 +192,7 @@ async def _run_async():
                 console.print("  [bold]/plan <goal>[/bold]             — generate and execute a plan")
                 console.print("  [bold]/task_status[/bold]             — show task progress for active project")
                 console.print("  [bold]/mode [read_only|default|auto][/bold] — show or change the permission mode")
+                console.print("  [bold]/audit [n][/bold]                — show this session's last n tool calls")
     finally:
         stop_watcher(observer)
         await dispose_engine()

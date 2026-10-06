@@ -9,6 +9,7 @@ from langchain.tools import tool
 
 from kartrix.config import settings
 from kartrix.observability.logger import get_logger
+from kartrix.security.audit import note
 from kartrix.security.command_policy import Decision, evaluate
 from kartrix.security.environment import scrubbed_env
 from kartrix.security.permissions import get_mode, has_approval_handler, request_approval
@@ -65,6 +66,7 @@ def run_command(command: str, directory: str = ".") -> str:
         directory: Directory to run in, relative to the workspace root.
     """
     decision = evaluate(command, directory)
+    note(policy=decision.action, category=str(decision.category), reason=decision.reason, mode=get_mode())
     if decision.action == "deny":
         return f"Error: command denied — {decision.reason}"
     if decision.action == "ask" and not request_approval(decision):
@@ -75,6 +77,7 @@ def run_command(command: str, directory: str = ".") -> str:
         result = run_process(decision.run_args, decision.cwd, scrubbed_env(), timeout)
     except OSError as e:
         return f"Error: could not start {decision.argv[0]}: {e.strerror or e}"
+    note(returncode=result.returncode, timed_out=result.timed_out)
     logger.info(
         "Command finished",
         extra={"argv": decision.argv, "returncode": result.returncode, "timed_out": result.timed_out},
