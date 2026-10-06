@@ -170,6 +170,24 @@ class WorkspaceSettings(_Section):
     max_file_kb: int = Field(2048, gt=0)  # largest file read_file/edit_file load, or write_file writes
 
 
+class PermissionsSettings(_Section):
+    """Command policy (B2) and permission mode (B4) — see kartrix/security/permissions.py."""
+
+    mode: Literal["read_only", "default", "auto"] = "default"
+    # Extra rules, matched against the parsed command: "npm run *" (trailing * = any args),
+    # "make test". deny > ask > allow; they never override the built-in hard deny list.
+    allow: list[str] = Field(default_factory=list)
+    ask: list[str] = Field(default_factory=list)
+    deny: list[str] = Field(default_factory=list)
+    # Package installs may only use these hosts (and their subdomains) as index/registry.
+    registries: list[str] = Field(
+        default_factory=lambda: ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com"]
+    )
+    command_timeout: float = Field(300.0, gt=0)  # seconds; the whole process tree is killed after this
+    # Env vars passed to commands although their name looks secret (e.g. SSH_AUTH_SOCK for git over ssh).
+    env_passthrough: list[str] = Field(default_factory=list)
+
+
 class RetrievalSettings(_Section):
     mode: Literal["hybrid", "dense", "sparse"] = "hybrid"  # hybrid = pgvector + full-text, fused with RRF
     top_k: int = Field(5, gt=0)
@@ -239,6 +257,7 @@ class Settings(BaseSettings):
     index: IndexSettings = IndexSettings()
     retrieval: RetrievalSettings = RetrievalSettings()
     workspace: WorkspaceSettings = WorkspaceSettings()
+    permissions: PermissionsSettings = PermissionsSettings()
     database: DatabaseSettings = DatabaseSettings()
     logging: LoggingSettings = LoggingSettings()
 

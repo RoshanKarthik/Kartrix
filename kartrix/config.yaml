@@ -92,6 +92,19 @@ workspace:                      # file tools are jailed to the repo Kartrix runs
     - id_ed25519*
   max_file_kb: 2048             # largest file the tools will load or write
 
+permissions:                    # what the agent's commands may do (kartrix/security/permissions.py)
+  mode: default                 # read_only | default | auto  (switch at runtime with /mode)
+  allow: []                     # extra rules, e.g. "make test", "npm run *" (trailing * = any arguments)
+  ask: []
+  deny: []                      # deny > ask > allow; the built-in hard deny list always wins
+  registries:                   # package installs may only use these indexes / registries
+    - pypi.org
+    - files.pythonhosted.org
+    - registry.npmjs.org
+    - registry.yarnpkg.com
+  command_timeout: 300          # seconds; the whole process tree is killed after this
+  env_passthrough: []           # env vars passed to commands even though their name looks secret
+
 retrieval:
   mode: hybrid                  # hybrid (pgvector + Postgres full-text, RRF) | dense | sparse
   top_k: 5

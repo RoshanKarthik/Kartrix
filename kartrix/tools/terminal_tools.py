@@ -1,77 +1,82 @@
-import subprocess
+"""The agent's command tool. Every command passes the command policy first
+(``kartrix.security.command_policy``) and then runs without a shell, inside the workspace,
+with Kartrix's secrets removed from its environment and stdin closed.
+"""
+
+from __future__ import annotations
 
 from langchain.tools import tool
 
-from kartrix.security.workspace import WorkspaceError, get_workspace
+from kartrix.config import settings
+from kartrix.observability.logger import get_logger
+from kartrix.security.command_policy import Decision, evaluate
+from kartrix.security.environment import scrubbed_env
+from kartrix.security.permissions import get_mode, has_approval_handler, request_approval
+from kartrix.tools.process_runner import ProcessResult, run_process
 
-_BLOCKED_COMMANDS = {"rm -rf /", "mkfs", "dd if=", ":(){:|:&};:"}
-_TIMEOUT_SECONDS = 30
+logger = get_logger(__name__)
+
+_OUTPUT_HEAD_CHARS = 10_000
+_OUTPUT_TAIL_CHARS = 20_000  # errors usually sit at the end
 
 
-def _is_blocked(command: str) -> bool:
-    return any(blocked in command for blocked in _BLOCKED_COMMANDS)
+def _clip(text: str) -> str:
+    if len(text) <= _OUTPUT_HEAD_CHARS + _OUTPUT_TAIL_CHARS:
+        return text
+    skipped = len(text) - _OUTPUT_HEAD_CHARS - _OUTPUT_TAIL_CHARS
+    return f"{text[:_OUTPUT_HEAD_CHARS]}\n… [{skipped} characters omitted] …\n{text[-_OUTPUT_TAIL_CHARS:]}"
 
 
-def _format_result(result: subprocess.CompletedProcess) -> str:
+def format_result(result: ProcessResult, timeout: float) -> str:
     parts = []
-    if result.stdout:
-        parts.append(result.stdout.rstrip())
-    if result.stderr:
-        parts.append(f"STDERR: {result.stderr.rstrip()}")
-    if result.returncode != 0:
+    if result.stdout.strip():
+        parts.append(_clip(result.stdout.rstrip()))
+    if result.stderr.strip():
+        parts.append(f"STDERR: {_clip(result.stderr.rstrip())}")
+    if result.timed_out:
+        parts.append(f"Error: command timed out after {timeout:.0f} seconds and was stopped")
+    elif result.returncode != 0:
         parts.append(f"Exit code: {result.returncode}")
     return "\n".join(parts) if parts else "(no output)"
 
 
-@tool
-def run_command(command: str) -> str:
-    """Run a shell command in the workspace root and return its output. Times out after 30 seconds."""
-    if not command or not command.strip():
-        return "Error: command cannot be empty"
-    if _is_blocked(command):
-        return "Error: command is not allowed for safety reasons"
-    try:
-        # shell=True goes away with the command policy + sandbox in Phase 1 (B2, B8).
-        result = subprocess.run(  # noqa: S602
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            cwd=get_workspace().root,
-            timeout=_TIMEOUT_SECONDS,
-        )
-        return _format_result(result)
-    except subprocess.TimeoutExpired:
-        return f"Error: command timed out after {_TIMEOUT_SECONDS} seconds"
-    except Exception as e:
-        return f"Error: {e}"
+def _not_approved(decision: Decision) -> str:
+    why = f"{decision.category}: {decision.reason}"
+    if has_approval_handler():
+        return f"Error: the user declined this command ({why})"
+    mode = get_mode()
+    switch = "" if mode == "auto" else ", switch mode with /mode auto"
+    return (
+        f"Error: command not run — it needs the user's approval ({why}) and permission mode "
+        f"'{mode}' doesn't allow it automatically. Tell the user the exact command; they can run it "
+        f"themselves{switch}, or add a rule under permissions.allow in config.yaml."
+    )
 
 
-@tool
-def run_in_directory(command: str, directory: str) -> str:
-    """Run a shell command inside a directory of the workspace. Times out after 30 seconds."""
-    if not command or not command.strip():
-        return "Error: command cannot be empty"
+@tool(parse_docstring=True)
+def run_command(command: str, directory: str = ".") -> str:
+    """Run one program with its arguments, e.g. "pytest -q" or "npm run build". There is no
+    shell: pipes, &&, ;, redirects and $(...) are not supported, and cmd/bash built-ins aren't
+    available — use the file tools for reading, searching and editing files. stdin is closed,
+    so pass flags that avoid interactive prompts (e.g. "npm init -y").
+
+    Args:
+        command: The program and its arguments.
+        directory: Directory to run in, relative to the workspace root.
+    """
+    decision = evaluate(command, directory)
+    if decision.action == "deny":
+        return f"Error: command denied — {decision.reason}"
+    if decision.action == "ask" and not request_approval(decision):
+        return _not_approved(decision)
+
+    timeout = settings.permissions.command_timeout
     try:
-        cwd = get_workspace().resolve(directory, "read")
-    except WorkspaceError as e:
-        return f"Error: {e}"
-    if not cwd.is_dir():
-        return f"Error: not a directory: {directory}"
-    if _is_blocked(command):
-        return "Error: command is not allowed for safety reasons"
-    try:
-        # shell=True goes away with the command policy + sandbox in Phase 1 (B2, B8).
-        result = subprocess.run(  # noqa: S602
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            cwd=cwd,
-            timeout=_TIMEOUT_SECONDS,
-        )
-        return _format_result(result)
-    except subprocess.TimeoutExpired:
-        return f"Error: command timed out after {_TIMEOUT_SECONDS} seconds"
-    except Exception as e:
-        return f"Error: {e}"
+        result = run_process(decision.run_args, decision.cwd, scrubbed_env(), timeout)
+    except OSError as e:
+        return f"Error: could not start {decision.argv[0]}: {e.strerror or e}"
+    logger.info(
+        "Command finished",
+        extra={"argv": decision.argv, "returncode": result.returncode, "timed_out": result.timed_out},
+    )
+    return format_result(result, timeout)

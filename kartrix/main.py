@@ -21,6 +21,7 @@ from kartrix.memory.session import (
 )
 from kartrix.memory.short_term import get_checkpointer
 from kartrix.observability.logger import get_logger
+from kartrix.security.permissions import MODES, get_mode, set_mode
 from kartrix.security.workspace import set_workspace
 from kartrix.tasks.orchestrator import handle_plan_command
 from kartrix.tasks.status import show_task_status
@@ -48,7 +49,7 @@ async def initialize(checkpointer):
 
     repo_path = str(Path.cwd())
     workspace = set_workspace(repo_path)  # file tools may only touch this tree
-    console.print(f"[dim]Workspace: {workspace.root}[/dim]")
+    console.print(f"[dim]Workspace: {workspace.root} · permission mode: {get_mode()}[/dim]")
     await update_index()
 
     semantic_cache = await build_semantic_cache()
@@ -134,6 +135,14 @@ async def _run_async():
                 await handle_plan_command(goal, session_id)
             elif user_input == "/task_status":
                 await show_task_status()
+            elif user_input == "/mode" or user_input.startswith("/mode "):
+                target = user_input.removeprefix("/mode").strip()
+                if target:
+                    try:
+                        set_mode(target)
+                    except ValueError as e:
+                        console.print(f"[red]{e}[/red]")
+                console.print(f"[dim]Permission mode: {get_mode()} (available: {', '.join(MODES)})[/dim]")
             else:
                 logger.warning(f"Unknown command received: {user_input}")
                 console.print("[yellow]Unknown command. Try:[/yellow]")
@@ -145,6 +154,7 @@ async def _run_async():
                 console.print("  [bold]/session[/bold]                 — show current session id")
                 console.print("  [bold]/plan <goal>[/bold]             — generate and execute a plan")
                 console.print("  [bold]/task_status[/bold]             — show task progress for active project")
+                console.print("  [bold]/mode [read_only|default|auto][/bold] — show or change the permission mode")
     finally:
         stop_watcher(observer)
         await dispose_engine()

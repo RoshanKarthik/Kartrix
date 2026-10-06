@@ -22,7 +22,6 @@ from kartrix.tools.filesystem_tools import (
     read_file,
     write_file,
 )
-from kartrix.tools.terminal_tools import run_in_directory
 
 
 @pytest.fixture
@@ -243,8 +242,3 @@ def test_list_and_exists(project: Path) -> None:
     assert call(file_exists, file_path="src/app.py") == "True"
     assert call(file_exists, file_path="src/nope.py") == "False"
     assert "outside" in call(list_directory, directory="..")
-
-
-def test_run_in_directory_is_jailed(root: Path) -> None:
-    out = run_in_directory.invoke({"command": "echo hi", "directory": ".."})
-    assert "outside the workspace" in out

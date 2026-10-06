@@ -24,6 +24,7 @@ from langchain.tools import tool
 from kartrix.config import settings
 from kartrix.context.discovery import RepoFilter, iter_files
 from kartrix.observability.logger import get_logger
+from kartrix.security.permissions import PermissionDeniedError, ensure_writes_allowed
 from kartrix.security.workspace import CASE_INSENSITIVE, WorkspaceError, get_workspace
 
 logger = get_logger(__name__)
@@ -49,7 +50,7 @@ def _tool_errors[**P](fn: Callable[P, str]) -> Callable[P, str]:
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> str:
         try:
             return fn(*args, **kwargs)
-        except WorkspaceError as e:
+        except (WorkspaceError, PermissionDeniedError) as e:
             return f"Error: {e}"
         except PermissionError:
             return "Error: permission denied by the operating system"
@@ -203,6 +204,7 @@ def write_file(file_path: str, content: str) -> str:
         file_path: Path relative to the workspace root.
         content: The complete new file content.
     """
+    ensure_writes_allowed()
     ws = get_workspace()
     path = ws.resolve(file_path, "write")
     rel = ws.relative(path)
@@ -225,6 +227,7 @@ def append_file(file_path: str, content: str) -> str:
         file_path: Path relative to the workspace root.
         content: Text to add at the end of the file.
     """
+    ensure_writes_allowed()
     ws = get_workspace()
     path = ws.resolve(file_path, "write")
     rel = ws.relative(path)
@@ -251,6 +254,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
         new_string: Replacement text.
         replace_all: Replace every occurrence instead of requiring exactly one.
     """
+    ensure_writes_allowed()
     ws = get_workspace()
     path = ws.resolve(file_path, "write")
     rel = ws.relative(path)

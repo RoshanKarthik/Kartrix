@@ -100,6 +100,8 @@ module = [
     "kartrix.tasks.task_store",
     "kartrix.security.*",
     "kartrix.tools.filesystem_tools",
+    "kartrix.tools.process_runner",
+    "kartrix.tools.terminal_tools",
 ]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true

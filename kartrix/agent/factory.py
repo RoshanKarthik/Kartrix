@@ -6,7 +6,7 @@ from kartrix.mcp.mcp_client import get_mcp_tools
 from kartrix.observability.logger import get_logger
 from kartrix.skills.skill_tools import build_skills_prompt, load_skill
 from kartrix.tools.filesystem_tools import READ_TOOLS, WRITE_TOOLS
-from kartrix.tools.terminal_tools import run_command, run_in_directory
+from kartrix.tools.terminal_tools import run_command
 
 logger = get_logger(__name__)
 
@@ -34,7 +34,6 @@ async def build_agent(checkpointer):
         *READ_TOOLS,
         *WRITE_TOOLS,
         run_command,
-        run_in_directory,
         *mcp_tools,
     ]
 
