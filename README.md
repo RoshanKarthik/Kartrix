@@ -1,8 +1,8 @@
 # Kartrix
 
-An autonomous, security-first AI coding agent. Kartrix understands your codebase through
-RAG, plans multi-step changes for your approval, executes them with least-privilege tools,
-and verifies the results.
+An autonomous, security-first AI coding agent for your terminal. Kartrix understands your codebase
+through RAG, plans multi-step changes for your approval, executes them with least-privilege tools in a
+sandbox, and verifies the results — so you can build easy to medium applications with your own LLM keys.
 
 > Work in progress — see [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/PROGRESS.md](docs/PROGRESS.md).
 
