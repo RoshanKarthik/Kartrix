@@ -62,7 +62,12 @@ jobs:
           uv run alembic downgrade base
           uv run alembic upgrade head
       - name: Pytest
-        run: uv run pytest
+        run: |
+          set -o pipefail
+          uv run pytest -rfE 2>&1 | tee pytest.log
+      - name: Failed tests as annotations
+        if: failure()
+        run: grep -E '^(FAILED|ERROR) ' pytest.log | cut -c1-500 | sed 's/^/::error title=pytest::/' || true
       - name: Service logs on failure
         if: failure()
         run: docker compose logs --no-color
