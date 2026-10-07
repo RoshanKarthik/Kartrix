@@ -283,6 +283,7 @@ class RetrievalSettings(_Section):
     top_k: int = Field(5, gt=0)
     candidates: int = Field(40, gt=0)  # results taken from each retriever before fusion
     rrf_k: int = Field(60, gt=0)  # reciprocal-rank-fusion constant
+    graph_neighbors: int = Field(2, ge=0)  # callers/callees of the top hits added to search results (0 = off)
 
 
 class DatabaseSettings(_Section):
@@ -338,6 +339,7 @@ class ContextSettings(_Section):
     instructions_tokens: int = Field(1500, gt=0)  # KARTRIX.md (head kept)
     memory_tokens: int = Field(600, gt=0)  # recalled memories, best first, whole items only
     conversation_tokens: int = Field(1500, gt=0)  # recent turns (newest kept)
+    repo_map_tokens: int = Field(400, ge=0)  # most-referenced symbols from the code graph (0 = off)
 
 
 class AgentsSettings(_Section):

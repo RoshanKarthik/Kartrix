@@ -3,6 +3,8 @@
 - ``dense``    pgvector cosine search over the embedded chunks
 - ``lexical``  Postgres full-text search (``sparse`` in ``retrieval.mode``)
 - ``hybrid``   both, fused with reciprocal rank fusion (the default)
+- ``graph``    hybrid, with the last results swapped for callers/callees of the top hits from the code
+  graph (GraphRAG, ``retrieval.graph_neighbors`` of them) — same k, so it compares fairly with hybrid
 - ``search_first`` no index at all: ranks the repository's files by how well they match the question's
   words (what an agent finds with grep/glob before it reads), returning the best-matching window of
   each file. A stand-in for the search-first context of step 3.2, so the index can be judged against it.
@@ -24,7 +26,7 @@ from kartrix.context.indexers.pg_index import split_identifiers
 Chunk = dict[str, Any]
 Retriever = Callable[[str, Path, int], Awaitable[list[Chunk]]]
 
-INDEX_MODES = ("dense", "lexical", "hybrid")
+INDEX_MODES = ("dense", "lexical", "hybrid", "graph")
 ALL_MODES = (*INDEX_MODES, "search_first", "repo_map")
 DEFAULT_MODES = (*INDEX_MODES, "search_first")
 UNAVAILABLE = {"repo_map": "built in step 3.2"}
@@ -121,6 +123,16 @@ async def _search_first(query: str, root: Path, k: int) -> list[Chunk]:
     return await asyncio.to_thread(engine.search, query, k)
 
 
+async def _graph(query: str, root: Path, k: int) -> list[Chunk]:
+    from kartrix.config import settings
+    from kartrix.context.retrievers import graph
+    from kartrix.context.retrievers.pg_hybrid import retrieve
+
+    seeds = await retrieve(query, k=k, repo_root=root, mode="hybrid")
+    related = await graph.neighbors(seeds, root, n=min(max(settings.retrieval.graph_neighbors, 1), k - 1))
+    return seeds[: k - len(related)] + related
+
+
 def _index_mode(mode: str) -> Retriever:
     from kartrix.context.retrievers.pg_hybrid import retrieve
 
@@ -135,6 +147,8 @@ def _index_mode(mode: str) -> Retriever:
 def get_retriever(mode: str) -> Retriever:
     if mode in UNAVAILABLE:
         raise ValueError(f"retrieval mode {mode} is not available yet ({UNAVAILABLE[mode]})")
+    if mode == "graph":
+        return _graph
     if mode in INDEX_MODES:
         return _index_mode(mode)
     if mode == "search_first":

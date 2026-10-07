@@ -3,7 +3,7 @@ from typing import Any
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 
-from kartrix.agent.tools import remember, search_codebase
+from kartrix.agent.tools import remember, search_codebase, symbol_graph
 from kartrix.llm.factory import get_llm, get_model_middleware
 from kartrix.observability.logger import get_logger
 from kartrix.security.approvals import ApprovalMiddleware
@@ -26,7 +26,7 @@ If you cannot find the answer in the codebase, say so explicitly.
 {SECURITY_RULES}"""
 
 # Kartrix's own tools; MCP servers may not register tools with these names.
-NATIVE_TOOLS = [search_codebase, load_skill, *READ_TOOLS, *WRITE_TOOLS, run_command, remember]
+NATIVE_TOOLS = [search_codebase, symbol_graph, load_skill, *READ_TOOLS, *WRITE_TOOLS, run_command, remember]
 
 
 def agent_middleware(approval: ApprovalMiddleware | None, **model_kwargs: Any) -> list[AgentMiddleware]:

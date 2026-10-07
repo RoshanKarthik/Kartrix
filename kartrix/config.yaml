@@ -48,6 +48,7 @@ context:                        # per-turn context for the subagents: token budg
   instructions_tokens: 1500     # KARTRIX.md at the repo root
   memory_tokens: 600            # recalled long-term memories
   conversation_tokens: 1500     # recent turns
+  repo_map_tokens: 400          # most-referenced symbols (code graph); 0 = off
 
 index:                          # what gets indexed (on top of every .gitignore in the repo)
   max_file_kb: 512              # larger files are skipped
@@ -185,6 +186,7 @@ retrieval:
   top_k: 5
   candidates: 40                # per-retriever results before fusion
   rrf_k: 60
+  graph_neighbors: 2             # callers/callees of the top hits added via the code graph (0 = off)
 
 database:                       # URL comes from DATABASE_URL in .env
   pool_size: 5

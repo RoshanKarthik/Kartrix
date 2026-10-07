@@ -8,6 +8,8 @@ How a run works (``index_repo``):
   3. Changed/new files are parsed, embedded in batches and written; each file's old
      chunks go away with its ``code_files`` row (ON DELETE CASCADE).
   4. Rows for files that disappeared (deleted or newly ignored) are removed.
+  5. Call/import edges of each parsed code file go to ``code_edges`` (the code graph, see
+     ``indexers.code_graph``); a repo indexed before the graph existed gets them in one backfill pass.
 
 Every chunk stores a halfvec embedding (dense search) and a weighted tsvector
 (name/path = A, body = B) for keyword search — see ``retrievers.pg_hybrid``.
@@ -26,12 +28,13 @@ from sqlalchemy import ColumnClause, Text, cast, delete, func, insert, literal_c
 
 from kartrix.config import settings
 from kartrix.context.discovery import RepoFilter, discover_files
+from kartrix.context.indexers.code_graph import Edge, extract_edges, supports
 from kartrix.context.indexers.code_parser import ParsedChunk, parse_file
 from kartrix.db.engine import session_scope
-from kartrix.db.models import EMBEDDING_DIMS, CodeChunk, CodeFile
+from kartrix.db.models import EMBEDDING_DIMS, CodeChunk, CodeEdge, CodeFile
 from kartrix.llm.factory import get_embedder
 from kartrix.observability.logger import get_logger
-from kartrix.security.secrets import RULES_VERSION, redact_with_count
+from kartrix.security.secrets import RULES_VERSION, redact, redact_with_count
 
 logger = get_logger(__name__)
 
@@ -87,6 +90,7 @@ class _Prepared:
     mtime_ns: int
     is_new: bool
     chunks: list[ParsedChunk] = field(default_factory=list)
+    edges: list[Edge] = field(default_factory=list)
     secrets: int = 0
 
 
@@ -127,6 +131,7 @@ def _read_and_parse(root: Path, rel: str, is_new: bool, known_sha: str | None) -
     if digest == known_sha:
         return None
     source = data.decode("utf-8", errors="ignore").replace("\x00", "")
+    prep.edges = _edges(source, rel)
     try:
         chunks = parse_file(str(path), source=source)
     except (SyntaxError, ValueError) as e:  # empty or unsupported file: stored with 0 chunks
@@ -140,6 +145,26 @@ def _read_and_parse(root: Path, rel: str, is_new: bool, known_sha: str | None) -
     if prep.secrets:
         logger.info("Secrets redacted before indexing", extra={"path": rel, "count": prep.secrets})
     return prep
+
+
+def _edges(source: str, rel: str) -> list[Edge]:
+    """The file's call/import edges (none if it isn't code or doesn't parse); targets redacted."""
+    if not supports(rel):
+        return []
+    try:
+        edges = extract_edges(source, rel)
+    except Exception as e:  # the graph is an extra: never fail indexing over it
+        logger.warning("Code graph extraction failed", extra={"path": rel, "error": repr(e)})
+        return []
+    return [replace(e, target=redact(e.target)) for e in edges]
+
+
+def _edge_rows(root_key: str, file_id: Any, edges: list[Edge]) -> list[dict[str, Any]]:
+    return [
+        {"file_id": file_id, "repo_root": root_key, "source": e.source, "kind": e.kind, "target": e.target,
+         "line": e.line}
+        for e in edges
+    ]  # fmt: skip
 
 
 def _embed_text(rel: str, chunk: ParsedChunk) -> str:
@@ -199,6 +224,9 @@ async def _write_group(root_key: str, group: list[_Prepared], model: str) -> int
                     tsv=tsv,
                 )
             )
+        rows = [row for p in group for row in _edge_rows(root_key, file_ids[p.rel], p.edges)]
+        if rows:
+            await s.execute(insert(CodeEdge), rows)
     return len(pairs)
 
 
@@ -277,8 +305,44 @@ async def index_repo(repo_root: str | Path) -> IndexStats:
         files = await asyncio.to_thread(discover_files, root)
         rels = [f.relative_to(root).as_posix() for f in files]
         stats = await _index(root, rels, IndexStats(), prune=True)
+        if not await _has_edges(str(root)):
+            await _build_graph(root)
     logger.info("Index updated", extra={"repo": str(root), **stats.__dict__})
     return stats
+
+
+async def _has_edges(root_key: str) -> bool:
+    async with session_scope() as s:
+        found = await s.execute(select(CodeEdge.id).where(CodeEdge.repo_root == root_key).limit(1))
+        return found.first() is not None
+
+
+async def _build_graph(root: Path) -> int:
+    """Backfill: extract the edges of every indexed code file from disk (no embedding calls). For a repo
+    indexed before the code graph existed; new and changed files get their edges while being indexed."""
+    root_key = str(root)
+    async with session_scope() as s:
+        files = (await s.execute(select(CodeFile.id, CodeFile.path).where(CodeFile.repo_root == root_key))).all()
+
+    def extract() -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for f in files:
+            if not supports(f.path):
+                continue
+            try:
+                source = (root / f.path).read_text(encoding="utf-8", errors="ignore").replace("\x00", "")
+            except OSError:
+                continue
+            rows += _edge_rows(root_key, f.id, _edges(source, f.path))
+        return rows
+
+    rows = await asyncio.to_thread(extract)
+    if rows:
+        async with session_scope() as s:
+            await s.execute(delete(CodeEdge).where(CodeEdge.repo_root == root_key))
+            await s.execute(insert(CodeEdge), rows)
+    logger.info("Code graph built", extra={"repo": root_key, "edges": len(rows)})
+    return len(rows)
 
 
 async def index_file(repo_root: str | Path, path: str | Path, repo_filter: RepoFilter | None = None) -> IndexStats:

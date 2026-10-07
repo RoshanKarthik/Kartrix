@@ -8,6 +8,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from kartrix.agent import context as ctx
+from kartrix.context.retrievers.graph import MapEntry
 from kartrix.memory.long_term import Recalled
 
 
@@ -63,11 +64,18 @@ async def test_build_context_orders_sections_and_reports_them(monkeypatch: pytes
 
     monkeypatch.setattr(ctx.long_term, "recall", recall)
     monkeypatch.setattr(ctx.long_term, "project_instructions", lambda: "Use type hints.")
+
+    async def repo_map() -> list[MapEntry]:
+        return [MapEntry("app/db.py", "session", "function", 3, 12)]
+
+    monkeypatch.setattr(ctx.graph, "repo_map", repo_map)
     messages = [HumanMessage("hi"), AIMessage("hello"), HumanMessage("how do I run the tests")]
     text, report = await ctx.build_context(messages)
-    order = [text.index("## Project instructions"), text.index("## Remembered"), text.index("## Recent conversation")]
-    assert order == sorted(order)
-    assert [s.name for s in report.sections] == ["instructions", "memory", "conversation"]
+    titles = ["## Project instructions", "## Repo map", "## Remembered", "## Recent conversation"]
+    order = [text.index(t) for t in titles]
+    assert order == sorted(order)  # stable → volatile
+    assert "app/db.py:3 function session — 12 refs" in text
+    assert [s.name for s in report.sections] == ["instructions", "repo_map", "memory", "conversation"]
     assert report.stale == 1 and report.tokens == sum(s.tokens for s in report.sections)
 
 
@@ -75,7 +83,11 @@ async def test_failed_recall_still_builds_a_context(monkeypatch: pytest.MonkeyPa
     async def broken(query: str) -> list[Recalled]:
         raise RuntimeError("db down")
 
+    async def no_index() -> list[MapEntry]:
+        raise RuntimeError("no index")
+
     monkeypatch.setattr(ctx.long_term, "recall", broken)
+    monkeypatch.setattr(ctx.graph, "repo_map", no_index)
     monkeypatch.setattr(ctx.long_term, "project_instructions", lambda: "")
     text, report = await ctx.build_context([HumanMessage("q")])
     assert text == "" and report.sections == []

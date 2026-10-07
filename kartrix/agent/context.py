@@ -6,9 +6,11 @@ old turns compressed.
   (prompt caching) and only the tail changes:
 
   1. **Project instructions** — ``KARTRIX.md`` (``context.instructions_tokens``; the head is kept).
-  2. **Remembered** — long-term memories relevant to the request, best first, whole items only
+  2. **Repo map** — the most-referenced functions/classes from the code graph, most-called first
+     (``context.repo_map_tokens``); changes only when the code does.
+  3. **Remembered** — long-term memories relevant to the request, best first, whole items only
      (``context.memory_tokens``), with "may be stale" notes.
-  3. **Recent conversation** — the turns before the request, newest kept (``context.conversation_tokens``).
+  4. **Recent conversation** — the turns before the request, newest kept (``context.conversation_tokens``).
 
   The request itself goes last (see ``kartrix.agent.graph._brief``). A ``ContextAssembled`` event reports
   each section's tokens, budget and what was cut.
@@ -29,6 +31,7 @@ from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from kartrix.config import settings
+from kartrix.context.retrievers import graph
 from kartrix.core.events import ContextAssembled, ContextSection, emit
 from kartrix.llm.factory import get_chat_model
 from kartrix.memory import long_term
@@ -97,6 +100,32 @@ def instructions_section(text: str, budget: int) -> Section | None:
                    dropped=int(fitted != text))  # fmt: skip
 
 
+def repo_map_section(entries: Sequence[graph.MapEntry], budget: int) -> Section | None:
+    """The most-called symbols, one line each (``path:line kind name — N refs``), until the budget."""
+    if not entries or budget <= 0:
+        return None
+    lines: list[str] = []
+    for e in entries:
+        line = f"{e.path}:{e.line} {e.kind} {e.name} — {e.refs} refs"
+        if approx_tokens("\n".join([*lines, line])) > budget:
+            break
+        lines.append(line)
+    if not lines:
+        return None
+    return Section("repo_map", "Repo map (most-referenced code, from the code graph)", "\n".join(lines), budget,
+                   len(lines), len(entries) - len(lines))  # fmt: skip
+
+
+async def _repo_map(budget: int) -> list[graph.MapEntry]:
+    if budget <= 0:
+        return []
+    try:
+        return await graph.repo_map()
+    except Exception as e:  # e.g. no index yet: the context just has no map
+        logger.warning("Repo map unavailable", extra={"error": repr(e)})
+        return []
+
+
 def memory_section(memories: Sequence[Recalled], budget: int) -> Section | None:
     """Best-first memories that fit the budget whole (a cut memory could change its meaning)."""
     lines: list[str] = []
@@ -147,6 +176,7 @@ async def build_context(messages: Sequence[AnyMessage]) -> tuple[str, ContextAss
         s
         for s in (
             instructions_section(long_term.project_instructions(), cfg.instructions_tokens),
+            repo_map_section(await _repo_map(cfg.repo_map_tokens), cfg.repo_map_tokens),
             memory_section(memories, cfg.memory_tokens),
             conversation_section(messages, cfg.conversation_tokens),
         )

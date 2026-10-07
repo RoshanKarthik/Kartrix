@@ -41,7 +41,7 @@ from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 from kartrix.agent import context as agent_context
-from kartrix.agent.tools import remember, search_codebase
+from kartrix.agent.tools import remember, search_codebase, symbol_graph
 from kartrix.config import settings
 from kartrix.core.events import AgentStep, emit
 from kartrix.llm.factory import get_chat_model, get_model_middleware
@@ -90,7 +90,7 @@ Decide how to handle the user's latest message:
 
 EXPLORER_PROMPT = f"""You are the explorer: a read-only code investigator.
 Find what the request needs in this repository: use search_codebase first, then grep, glob and read_file
-for exact code. Do not change anything. Report concise findings: the relevant files, functions and
+for exact code, and symbol_graph to see who calls a function and what it calls. Do not change anything. Report concise findings: the relevant files, functions and
 line numbers, how they work, and anything a developer must know to answer or implement the request.
 If something can't be found, say so. If you learn a lasting convention about this repository, save it
 with remember.
@@ -160,8 +160,17 @@ class AgentGraph:
         mcp_tools = mcp_tools or []
         extra = f"\n\n{skills_prompt}" if skills_prompt else ""
         llm = get_chat_model("main")
-        explorer_tools = [search_codebase, *READ_TOOLS, remember, *skills, *mcp_tools]
-        coder_tools = [search_codebase, *READ_TOOLS, *WRITE_TOOLS, run_command, remember, *skills, *mcp_tools]
+        explorer_tools = [search_codebase, symbol_graph, *READ_TOOLS, remember, *skills, *mcp_tools]
+        coder_tools = [
+            search_codebase,
+            symbol_graph,
+            *READ_TOOLS,
+            *WRITE_TOOLS,
+            run_command,
+            remember,
+            *skills,
+            *mcp_tools,
+        ]
         reviewer_tools = [*READ_TOOLS, run_command]
         self.explorer = create_agent(
             llm, tools=explorer_tools, system_prompt=EXPLORER_PROMPT + extra, middleware=middleware(None)
