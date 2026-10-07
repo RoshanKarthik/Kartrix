@@ -105,6 +105,26 @@ class AgentStep(_Event):
     summary: str | None = None
 
 
+class ContextSection(BaseModel):
+    name: str
+    tokens: int
+    budget: int
+    items: int = 0  # memories / turns included
+    dropped: int = 0  # items left out (or 1 if the text was cut)
+
+
+class ContextAssembled(_Event):
+    """The context for this turn was assembled: what went in, and what the budgets cut."""
+
+    type: Literal["context_assembled"] = "context_assembled"
+    sections: list[ContextSection]
+    stale: int = 0  # recalled memories that mention files changed since
+
+    @property
+    def tokens(self) -> int:
+        return sum(s.tokens for s in self.sections)
+
+
 class ApprovalRequested(_Event):
     type: Literal["approval_requested"] = "approval_requested"
     tool_call_id: str
@@ -185,7 +205,7 @@ class FilesChanged(_Event):
 
 Event = Annotated[
     Notice | RunStarted | RunFinished | AssistantMessage | ToolCallStarted | ToolCallFinished | AgentStep
-    | ApprovalRequested
+    | ContextAssembled | ApprovalRequested
     | ApprovalResolved | PlanProposed | PlanReviewed | ProjectStarted | TaskStarted | TaskFinished | Progress
     | ProjectFinished | FilesChanged,
     Field(discriminator="type"),

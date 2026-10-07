@@ -25,8 +25,8 @@
 Each subagent is a ``create_agent`` graph with the shared middleware stack (fallback/retry, audit,
 budget, content guard), so budgets, the kill switch, auditing and injection defences cover every
 step. The conversation (``messages``) lives in the parent graph's checkpointer; subagents get only
-the request, a short excerpt of the conversation and the previous step's report — not each other's
-tool noise. A reached budget skips straight to the end.
+the assembled context (project instructions, memories, recent turns — each within its token budget),
+the previous step's report and the request, last — not each other's tool noise. A reached budget skips straight to the end.
 """
 
 from __future__ import annotations
@@ -129,12 +129,15 @@ def _request(state: AgentState) -> str:
     return ""
 
 
-def _excerpt(state: AgentState, turns: int = 6, chars: int = 4000) -> str:
-    """The last few turns before the current request (subagents don't see the whole history)."""
-    msgs = [m for m in state.get("messages", [])[:-1] if isinstance(m, HumanMessage | AIMessage) and _text(m.content)]
-    lines = [f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {_text(m.content)}" for m in msgs[-turns:]]
-    text = "\n".join(lines)
-    return text[-chars:]
+def _brief(state: AgentState, *parts: str) -> str:
+    """A subagent's prompt: the assembled context first (stable → volatile, for prompt caching), then this
+    step's inputs, the request last. Subagents never see the whole history, only the budgeted context."""
+    context = state.get("context", "")
+    if not context:  # compiled without an assemble node: the recent turns only
+        section = agent_context.conversation_section(state.get("messages", []), settings.context.conversation_tokens)
+        context = section.render() if section else ""
+    blocks = [context, *parts, f"## Request (the user's latest message)\n{_request(state)}"]
+    return "\n\n".join(b for b in blocks if b)
 
 
 def _stopped() -> str | None:
@@ -206,21 +209,14 @@ class AgentGraph:
         }
 
     async def explore(self, state: AgentState) -> dict[str, Any]:
-        prompt = f"Request: {_request(state)}"
-        if excerpt := _excerpt(state):
-            prompt += f"\n\nEarlier conversation:\n{excerpt}"
-        if state.get("context"):
-            prompt += f"\n\nProject context:\n{state['context']}"
-        findings = await self._run("explorer", self.explorer, prompt)
+        findings = await self._run("explorer", self.explorer, _brief(state))
         return {"findings": findings, "steps": ["explorer"]}
 
     async def code(self, state: AgentState) -> dict[str, Any]:
-        prompt = f"Request: {_request(state)}\n\nExplorer findings:\n{state.get('findings', '')}"
-        if state.get("context"):
-            prompt += f"\n\nProject context:\n{state['context']}"
+        parts = [f"## Explorer findings\n{state.get('findings', '')}"]
         if state.get("review_notes"):
-            prompt += f"\n\nThe reviewer rejected your previous attempt. Fix these issues:\n{state['review_notes']}"
-        report = await self._run("coder", self.coder, prompt)
+            parts.append(f"## The reviewer rejected your previous attempt. Fix these issues\n{state['review_notes']}")
+        report = await self._run("coder", self.coder, _brief(state, *parts))
         return {"change_report": report, "rounds": state.get("rounds", 0) + 1, "steps": ["coder"]}
 
     async def review(self, state: AgentState) -> dict[str, Any]:
@@ -241,22 +237,18 @@ class AgentGraph:
     async def respond(self, state: AgentState) -> dict[str, Any]:
         if reason := _stopped():
             return {"messages": [AIMessage(f"Stopped: {reason}.")]}
-        parts = [f"User's message: {_request(state)}"]
-        if excerpt := _excerpt(state):
-            parts.append(f"Earlier conversation:\n{excerpt}")
-        if state.get("context"):
-            parts.append(f"Project context:\n{state['context']}")
+        parts = []
         if state.get("findings"):
-            parts.append(f"Explorer's findings:\n{state['findings']}")
+            parts.append(f"## Explorer's findings\n{state['findings']}")
         if state.get("change_report"):
-            parts.append(f"Coder's report:\n{state['change_report']}")
+            parts.append(f"## Coder's report\n{state['change_report']}")
         if state.get("route") == "change":
             verdict = (
                 "approved the change" if state.get("approved") else f"still has issues:\n{state.get('review_notes')}"
             )
-            parts.append(f"Reviewer {verdict}")
+            parts.append(f"## Reviewer\nThe reviewer {verdict}")
         emit(AgentStep(agent="responder", status="started"))
-        out = await self.responder.ainvoke({"messages": [HumanMessage("\n\n".join(parts))]})
+        out = await self.responder.ainvoke({"messages": [HumanMessage(_brief(state, *parts))]})
         answer = _text(out["messages"][-1].content) if out.get("messages") else ""
         emit(AgentStep(agent="responder", status="finished"))
         return {"messages": [AIMessage(answer)], "steps": ["responder"]}

@@ -332,6 +332,14 @@ def load_yaml_strict(path: Path) -> dict[str, Any]:
     return data
 
 
+class ContextSettings(_Section):
+    """Per-turn context for the subagents (kartrix.agent.context): a token budget per labelled section."""
+
+    instructions_tokens: int = Field(1500, gt=0)  # KARTRIX.md (head kept)
+    memory_tokens: int = Field(600, gt=0)  # recalled memories, best first, whole items only
+    conversation_tokens: int = Field(1500, gt=0)  # recent turns (newest kept)
+
+
 class AgentsSettings(_Section):
     """The multi-agent chat graph (kartrix.agent.graph)."""
 
@@ -351,6 +359,7 @@ class Settings(BaseSettings):
     semantic_cache: SemanticCacheSettings = SemanticCacheSettings()
     llm: LLMSettings = LLMSettings()
     agents: AgentsSettings = AgentsSettings()
+    context: ContextSettings = ContextSettings()
     skills: SkillsSettings = SkillsSettings()
     memory: MemorySettings = MemorySettings()
     index: IndexSettings = IndexSettings()

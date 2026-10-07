@@ -12,6 +12,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
+from kartrix.agent import context as context_mod
 from kartrix.agent import graph as graph_mod
 from kartrix.agent.factory import agent_middleware
 from kartrix.config import BudgetLimits, settings
@@ -51,11 +52,13 @@ def ws(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     permissions.clear_session_allowances()
 
 
-def _graph(monkeypatch: pytest.MonkeyPatch, router: list[AIMessage], main: list[AIMessage]) -> Any:
+def _graph(
+    monkeypatch: pytest.MonkeyPatch, router: list[AIMessage], main: list[AIMessage], assemble: Any = None
+) -> Any:
     models = {"router": _FakeModel(messages=iter(router)), "main": _FakeModel(messages=iter(main))}
     monkeypatch.setattr(graph_mod, "get_chat_model", lambda role="main", **kw: models[role])
     built = graph_mod.AgentGraph(middleware=agent_middleware, approval=ApprovalMiddleware)
-    return built.compile(InMemorySaver())
+    return built.compile(InMemorySaver(), assemble=assemble)
 
 
 async def _approve_all(requests: list[Any]) -> list[ApprovalDecision]:
@@ -159,3 +162,29 @@ async def test_reached_budget_skips_to_the_answer(ws: Path, monkeypatch: pytest.
         state = await run_agent(agent, {"messages": [{"role": "user", "content": "q"}]}, config, _approve_all)
     assert state["messages"][-1].content.startswith("Stopped:")
     assert "explorer" not in state.get("steps", [])
+
+
+async def test_assembled_context_comes_first_and_the_request_last(ws: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (ws / "KARTRIX.md").write_text("Always use type hints.\n")
+    await long_term.remember("add() lives in app.py", "fact", "user")
+    agent = _graph(
+        monkeypatch,
+        router=[_call("RouteDecision", {"route": "question", "reason": "q"})],
+        main=[AIMessage("add() is in app.py."), AIMessage("`add` is in app.py.")],
+        assemble=context_mod.assemble,
+    )
+    prompts: dict[str, str] = {}
+    run = graph_mod.AgentGraph._run
+
+    async def spy(self: Any, name: str, sub: Any, prompt: str) -> str:
+        prompts[name] = prompt
+        return await run(self, name, sub, prompt)
+
+    monkeypatch.setattr(graph_mod.AgentGraph, "_run", spy)
+    with collecting() as seen:
+        await _ask(agent, "Where is add in app.py?")
+    (event,) = [e for e in seen if e.type == "context_assembled"]
+    assert [s.name for s in event.sections] == ["instructions", "memory"]
+    explorer_prompt = prompts["explorer"]
+    assert explorer_prompt.index("Always use type hints.") < explorer_prompt.index("add() lives in app.py")
+    assert explorer_prompt.rstrip().endswith("Where is add in app.py?")

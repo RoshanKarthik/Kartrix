@@ -64,6 +64,10 @@ class ConsoleRenderer:
                 self._line(f"  → {tool} {(target or '')[:120]}".rstrip(), "dim")
             case ev.ToolCallFinished(tool=tool, outcome=outcome) if self.show_tool_calls and outcome != "ok":
                 self._line(f"  ✗ {tool}: {outcome}", "yellow" if outcome in ("declined", "stopped") else "red")
+            case ev.ContextAssembled(sections=sections, stale=stale) if sections:
+                parts = [f"{s.name} {s.tokens}/{s.budget}" + (f" ({s.items})" if s.items else "") for s in sections]
+                note = f" · {stale} possibly stale" if stale else ""
+                self._line(f"◇ context: {' · '.join(parts)} tokens{note}", "dim")
             case ev.AgentStep(agent="router", status="finished", summary=route):
                 self._line(f"◆ router: {route}", "dim")
             case ev.AgentStep(agent=agent, status="started") if agent in ("explorer", "coder", "reviewer"):
