@@ -33,6 +33,7 @@ from langchain_core.messages import AIMessage, ToolCall, ToolMessage
 from langgraph.types import Command, Interrupt, interrupt
 from sqlalchemy import update
 
+from kartrix.core.events import ApprovalRequested, ApprovalResolved, emit
 from kartrix.db.engine import session_scope
 from kartrix.db.models import Approval, ApprovalKind, ApprovalStatus
 from kartrix.observability.logger import get_logger
@@ -76,6 +77,7 @@ class ApprovalDecision:
     type: DecisionType
     command: str | None = None  # "edit": the command to run instead
     message: str | None = None  # "reject": optional reason, passed to the agent
+    by: str = "user"  # who decided: "user", or "policy" in headless runs
 
 
 Approver = Callable[[list[ApprovalRequest]], Awaitable[list[ApprovalDecision]]]
@@ -325,6 +327,13 @@ async def resolve(interrupt_value: dict[str, Any], approver: Approver, session_i
     """Ask the approver about one approval interrupt; returns the resume value."""
     requests = [ApprovalRequest(**r) for r in interrupt_value.get("requests", [])]
     ids = await _open_rows(requests, session_id)
+    for r in requests:
+        emit(
+            ApprovalRequested(
+                tool_call_id=r.tool_call_id, tool=r.tool, command=r.command, directory=r.directory,
+                category=r.category, reason=r.reason, task_key=r.task_key,
+            )
+        )  # fmt: skip
     start = time.perf_counter()
     with waiting_for_user():  # the run's time budget doesn't run while the user decides
         decisions = await approver(requests)
@@ -339,6 +348,8 @@ async def resolve(interrupt_value: dict[str, Any], approver: Approver, session_i
         },
     )
     await _close_rows(requests, decisions, ids, session_id)
+    for r, d in zip(requests, decisions, strict=True):
+        emit(ApprovalResolved(tool_call_id=r.tool_call_id, decision=d.type, by=d.by, message=d.message))
     return {"decisions": {r.tool_call_id: asdict(d) for r, d in zip(requests, decisions, strict=True)}}
 
 

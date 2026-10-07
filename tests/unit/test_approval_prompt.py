@@ -6,9 +6,9 @@ import io
 
 from rich.console import Console
 
-from kartrix.security.approval_prompt import ConsoleApprover
 from kartrix.security.approvals import ApprovalDecision, ApprovalRequest
 from kartrix.security.injection import visible
+from kartrix.ui.approval_prompt import ConsoleApprover
 
 
 def request(command: str = "npm install express", allow_session: bool = True, **kw: object) -> ApprovalRequest:

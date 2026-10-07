@@ -1,3 +1,5 @@
+"""The interactive REPL: one front end of :mod:`kartrix.core` (renders its events, asks the user)."""
+
 import asyncio
 import sys
 from datetime import datetime
@@ -8,49 +10,25 @@ from rich.markup import escape
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
-from kartrix.agent.factory import NATIVE_TOOLS, build_agent
-from kartrix.agent.orchestrator import handle_query
-from kartrix.cache.semantic_cache import build_semantic_cache, get_repo_domain
 from kartrix.config import settings
-from kartrix.context.indexers.pg_index import index_repo, show_index
-from kartrix.context.indexers.watcher import start_watcher, stop_watcher
-from kartrix.db.engine import dispose_engine
-from kartrix.llm.factory import get_embedder, get_llm
+from kartrix.core.events import bus
+from kartrix.core.session import CoreSession
 from kartrix.mcp.mcp_client import McpError, McpManager
-from kartrix.memory.session import (
-    InvalidSessionIdError,
-    get_current_session,
-    new_session,
-    record_session,
-    switch_session,
-)
-from kartrix.memory.short_term import get_checkpointer
+from kartrix.memory.session import InvalidSessionIdError, new_session, switch_session
 from kartrix.observability.logger import get_logger
-from kartrix.sandbox.manager import status as sandbox_status
 from kartrix.security import audit, checkpoints, external_tools
-from kartrix.security.approval_prompt import ConsoleApprover
-from kartrix.security.approvals import resume_pending
-from kartrix.security.budget import Budget, RunKind
-from kartrix.security.kill_switch import close_dangling_tool_calls, run_stoppable
+from kartrix.security.budget import Budget
 from kartrix.security.permissions import MODES, clear_session_allowances, get_mode, set_mode
-from kartrix.security.workspace import set_workspace
 from kartrix.skills.registry import SkillNotFoundError
 from kartrix.skills.skill_tools import get_registry
-from kartrix.tasks.orchestrator import handle_plan_command
-from kartrix.tasks.status import show_task_status
+from kartrix.ui.approval_prompt import ConsoleApprover
+from kartrix.ui.console import ConsoleRenderer
+from kartrix.ui.plan_review import make_reviewer
+from kartrix.ui.views import show_index, show_task_status
 
 console = Console()
 logger = get_logger(__name__)
 approver = ConsoleApprover(console)
-
-
-async def update_index() -> None:
-    """Incrementally sync the Postgres code index with the current directory."""
-    repo_path = str(Path.cwd())
-    logger.info(f"Checking index for: {repo_path}")
-    console.print(f"[dim]Checking index for {repo_path}...[/dim]")
-    stats = await index_repo(repo_path)
-    console.print(f"[dim]Index: {stats}[/dim]")
 
 
 async def show_audit(session_id: str, arg: str) -> None:
@@ -74,23 +52,6 @@ async def show_audit(session_id: str, arg: str) -> None:
             str(row.details.get("duration_ms", "")),
         )
     console.print(table)
-
-
-async def finish_pending_approval(agent, session_id: str) -> None:
-    """A session closed while asking for approval is still paused there: ask again and finish it."""
-    config = {"configurable": {"thread_id": session_id}}
-    try:
-        state = await agent.aget_state(config)
-        if not state.interrupts:
-            return
-        console.print("[yellow]This session stopped while waiting for your approval:[/yellow]")
-        result = await resume_pending(agent, config, approver)
-    except Exception as e:
-        logger.error(f"Could not resume the pending approval: {e}")
-        console.print(f"[red]Could not resume the pending approval: {e}[/red]")
-        return
-    if result and result.get("messages"):
-        console.print(result["messages"][-1].content)
 
 
 async def handle_mcp_command(command: str, arg: str, mcp: McpManager, session_id: str) -> bool:
@@ -172,41 +133,6 @@ async def handle_skills_command(arg: str, session_id: str) -> bool:
             console.print(f"  [red]⚠ contains text that looks like prompt injection ({rules})[/red]")
     console.print("[dim]Review a skill's files before approving it: /skills trust <name>[/dim]")
     return False
-
-
-_last_run: Budget | None = None  # for /budget
-
-
-async def run_guarded(coro, kind: RunKind, session_id: str):
-    """Run one agent run inside a fresh budget, stoppable with Ctrl+C / `kartrix stop`.
-    Returns (result or None if the kill switch cancelled it, budget)."""
-    global _last_run
-    budget = _last_run = Budget.for_run(kind)
-    result = await run_stoppable(coro, budget, on_stop=lambda msg: console.print(f"\n[yellow]{msg}[/yellow]"))
-    if budget.stop_reason:
-        console.print(f"[yellow]⏹ Stopped: {budget.stop_reason}[/yellow] [dim]· {budget.summary()}[/dim]")
-        await budget.record_stop(session_id)
-    return result, budget
-
-
-async def handle_ask(agent, question: str, session_id: str, semantic_cache, cache_domain) -> None:
-    """/ask: one chat turn — checkpointed (for /undo), budgeted and stoppable."""
-    async with checkpoints.track(f"/ask {question}", session_id):
-        response, budget = await run_guarded(
-            handle_query(
-                agent, question, session_id, approver, semantic_cache=semantic_cache, cache_domain=cache_domain
-            ),
-            "turn",
-            session_id,
-        )
-    if response is None:  # cancelled mid-step: answer the tool calls that never got a result
-        config = {"configurable": {"thread_id": session_id}}
-        try:
-            await close_dangling_tool_calls(agent, config, budget.stop_reason or "stopped")
-        except Exception as e:
-            logger.error(f"Could not tidy up the stopped turn: {e}")
-        return
-    console.print(response)
 
 
 def _when(ts: float) -> str:
@@ -291,7 +217,7 @@ async def handle_checkpoint_command(command: str, arg: str, session_id: str) -> 
     )
 
 
-def show_budget() -> None:
+def show_budget(last_run: Budget | None) -> None:
     """/budget: the limits and what the last run used."""
     cfg = settings.budgets
     table = Table(title="Budgets (config budgets.*)")
@@ -306,75 +232,23 @@ def show_budget() -> None:
             f"{lim.max_seconds:.0f} s" if lim.max_seconds else "—",
         )
     console.print(table)
-    if _last_run is not None:
-        stopped = f" — stopped: {_last_run.stop_reason}" if _last_run.stop_reason else ""
-        console.print(f"[dim]Last run ({_last_run.kind}): {_last_run.summary()}{stopped}[/dim]")
+    if last_run is not None:
+        stopped = f" — stopped: {last_run.stop_reason}" if last_run.stop_reason else ""
+        console.print(f"[dim]Last run ({last_run.kind}): {last_run.summary()}{stopped}[/dim]")
     console.print("[dim]Ctrl+C stops a run (twice quits); `kartrix stop` in another terminal stops all runs.[/dim]")
-
-
-async def initialize(checkpointer):
-    """Bootstrap LLM, embedder, index, watcher, MCP tools, cache, and session before the REPL starts."""
-    # Built once up front so a missing API key or bad provider config fails at startup.
-    get_llm()
-    get_embedder()
-    console.print(f"[dim]LLM: {settings.llm.provider} / {settings.llm.model}[/dim]")
-    console.print(f"[dim]Embedder: {settings.embeddings.provider} / {settings.embeddings.model}[/dim]")
-
-    repo_path = str(Path.cwd())
-    workspace = set_workspace(repo_path)  # file tools may only touch this tree
-    console.print(f"[dim]Workspace: {workspace.root} · permission mode: {get_mode()}[/dim]")
-    off = checkpoints.setup()
-    if off:
-        console.print(f"[yellow]Checkpoints off: {off}[/yellow]")
-    else:
-        undo, _ = await asyncio.to_thread(checkpoints.current().entries)  # type: ignore[union-attr]
-        console.print(f"[dim]Checkpoints: on ({len(undo)} undo points) — /undo reverts the last change[/dim]")
-    sandbox = await asyncio.to_thread(sandbox_status)
-    style = "dim" if sandbox.backend is not None else "yellow"
-    console.print(f"[{style}]Sandbox: {escape(sandbox.describe())}[/{style}]")
-    await update_index()
-
-    semantic_cache = await build_semantic_cache()
-    cache_domain = get_repo_domain(repo_path) if semantic_cache else None
-    if semantic_cache is not None:
-        console.print(f"[dim]Semantic cache: enabled (threshold={semantic_cache.threshold})[/dim]")
-    else:
-        console.print("[dim]Semantic cache: disabled[/dim]")
-
-    loop = asyncio.get_running_loop()
-
-    async def _invalidate_cache_on_change() -> None:
-        if semantic_cache is not None and cache_domain is not None:
-            await semantic_cache.invalidate_domain(cache_domain)
-
-    observer = start_watcher(repo_path, loop, on_change=_invalidate_cache_on_change)
-
-    mcp = McpManager(t.name for t in NATIVE_TOOLS)
-    for name, error in (await mcp.connect_remembered()).items():
-        console.print(f"[yellow]MCP server {name} not connected: {error}[/yellow]")
-    if mcp.connected:
-        console.print(f"[dim]MCP: {', '.join(mcp.connected)} ({len(mcp.tools)} tools)[/dim]")
-    pending_skills = [s.name for s in get_registry().skills() if get_registry().status(s.name) != "trusted"]
-    if pending_skills:
-        console.print(
-            f"[yellow]This repo has skills you haven't approved: {', '.join(pending_skills)} — see /skills[/yellow]"
-        )
-
-    agent = build_agent(checkpointer, mcp.tools)
-    session_id = get_current_session()
-    await record_session(session_id, repo_path)
-    console.print(f"[dim]Session: {session_id}[/dim]")
-    console.print("[green]✓ Ready[/green]\n")
-    await finish_pending_approval(agent, session_id)
-    return agent, session_id, observer, semantic_cache, cache_domain, mcp
 
 
 async def _run_async():
     logger.info("Starting Kartrix")
     console.print("\n[bold blue]Kartrix[/bold blue] — RAG-powered code assistant")
 
-    checkpointer = get_checkpointer()
-    agent, session_id, observer, semantic_cache, cache_domain, mcp = await initialize(checkpointer)
+    unsubscribe = bus.subscribe(ConsoleRenderer(console))
+    try:
+        core = await CoreSession.start(approver, make_reviewer(console))
+    except BaseException:
+        unsubscribe()
+        raise
+    console.print("[green]✓ Ready[/green]\n")
     console.print("Type [bold]'/exit'[/bold] to quit\n")
 
     try:
@@ -390,46 +264,42 @@ async def _run_async():
             elif user_input.startswith("/ask "):
                 question = user_input.removeprefix("/ask ").strip()
                 logger.info(f"Ask command received: {question}")
-                console.print(f"[dim]Searching for: {question}... (Ctrl+C stops)[/dim]")
-                await handle_ask(agent, question, session_id, semantic_cache, cache_domain)
+                await core.ask(question)
             elif user_input == "/reindex":
                 console.print("[dim]Re-indexing current directory...[/dim]")
-                await update_index()
-                if semantic_cache is not None:
-                    await semantic_cache.invalidate_domain(cache_domain)
+                await core.reindex()
+                if core.semantic_cache is not None:
+                    await core.invalidate_cache()
                     console.print("[dim]Semantic cache invalidated for this repo.[/dim]")
                 console.print("[green]✓ Re-index complete.[/green]")
             elif user_input == "/new_session":
-                session_id = new_session()
                 clear_session_allowances()
-                await record_session(session_id, str(Path.cwd()))
-                console.print(f"[green]New session started: {session_id}[/green]")
+                await core.use_session(new_session())
+                console.print(f"[green]New session started: {core.session_id}[/green]")
             elif user_input.startswith("/switch "):
                 target = user_input.removeprefix("/switch ").strip()
                 try:
-                    session_id = switch_session(target)
-                    clear_session_allowances()
-                    await record_session(session_id, str(Path.cwd()))
+                    switched = switch_session(target)
                 except InvalidSessionIdError:
                     console.print("[red]Invalid session id — expected a UUID like the one shown by /session.[/red]")
                 else:
-                    console.print(f"[green]Switched to session: {session_id}[/green]")
-                    await finish_pending_approval(agent, session_id)
+                    clear_session_allowances()
+                    await core.use_session(switched)
+                    console.print(f"[green]Switched to session: {switched}[/green]")
+                    await core.finish_pending_approval()
             elif user_input == "/session":
-                console.print(f"[dim]Current session: {session_id}[/dim]")
+                console.print(f"[dim]Current session: {core.session_id}[/dim]")
             elif user_input == "/show_index":
                 logger.info("Showing index")
-                await show_index(Path.cwd())
+                await show_index(console, Path.cwd())
             elif user_input.startswith("/plan "):
                 goal = user_input.removeprefix("/plan ").strip()
                 logger.info(f"Plan command received: {goal}")
-                result, _ = await run_guarded(handle_plan_command(goal, session_id, approver), "plan", session_id)
-                if result is None and _last_run is not None and _last_run.stop_reason:
-                    console.print("[yellow]Run /plan again to continue where it stopped.[/yellow]")
+                await core.plan(goal)
             elif user_input == "/task_status":
-                await show_task_status()
+                await show_task_status(console)
             elif user_input == "/audit" or user_input.startswith("/audit "):
-                await show_audit(session_id, user_input.removeprefix("/audit").strip())
+                await show_audit(core.session_id, user_input.removeprefix("/audit").strip())
             elif user_input == "/mode" or user_input.startswith("/mode "):
                 target = user_input.removeprefix("/mode").strip()
                 if target:
@@ -444,22 +314,22 @@ async def _run_async():
                             action="permissions.mode",
                             target=target,
                             outcome="ok",
-                            session_id=session_id,
+                            session_id=core.session_id,
                             details={"previous": previous},
                         )
                 console.print(f"[dim]Permission mode: {get_mode()} (available: {', '.join(MODES)})[/dim]")
             elif user_input.split()[0] in ("/mcp", "/connect", "/disconnect"):
                 command, _, arg = user_input.partition(" ")
-                if await handle_mcp_command(command, arg.strip(), mcp, session_id):
-                    agent = build_agent(checkpointer, mcp.tools)
+                if core.mcp is not None and await handle_mcp_command(command, arg.strip(), core.mcp, core.session_id):
+                    core.rebuild_agent()
             elif user_input.split()[0] in ("/undo", "/redo", "/checkpoints"):
                 command, _, arg = user_input.partition(" ")
-                await handle_checkpoint_command(command, arg.strip(), session_id)
+                await handle_checkpoint_command(command, arg.strip(), core.session_id)
             elif user_input == "/budget":
-                show_budget()
+                show_budget(core.last_budget)
             elif user_input == "/skills" or user_input.startswith("/skills "):
-                if await handle_skills_command(user_input.removeprefix("/skills").strip(), session_id):
-                    agent = build_agent(checkpointer, mcp.tools)
+                if await handle_skills_command(user_input.removeprefix("/skills").strip(), core.session_id):
+                    core.rebuild_agent()
             else:
                 logger.warning(f"Unknown command received: {user_input}")
                 console.print("[yellow]Unknown command. Try:[/yellow]")
@@ -487,9 +357,8 @@ async def _run_async():
                     "  [dim]Ctrl+C stops a running turn or plan (twice quits); `kartrix stop` stops all runs[/dim]"
                 )
     finally:
-        await mcp.close()  # same task that opened the sessions
-        stop_watcher(observer)
-        await dispose_engine()
+        await core.close()
+        unsubscribe()
 
 
 def run():

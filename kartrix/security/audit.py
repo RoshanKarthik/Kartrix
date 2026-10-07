@@ -28,6 +28,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from sqlalchemy import select
 
+from kartrix.core.events import ToolCallFinished, ToolCallStarted, emit
 from kartrix.db.engine import session_scope
 from kartrix.db.models import AuditLog
 from kartrix.observability.logger import get_logger
@@ -187,6 +188,16 @@ class AuditMiddleware(AgentMiddleware):
         holder: dict[str, Any] = {}
         token = _notes.set(holder)
         start = time.perf_counter()
+        call = request.tool_call
+        args = call.get("args") or {}
+        emit(
+            ToolCallStarted(
+                call_id=call.get("id"),
+                tool=call.get("name", "?"),
+                target=next((str(args[k])[:300] for k in _TARGET_ARGS if args.get(k)), None),
+                task_key=scope_ids().get("task_key"),
+            )
+        )
         try:
             result = await handler(request)
         except asyncio.CancelledError:  # the kill switch cancelled the run mid-call
@@ -217,6 +228,14 @@ class AuditMiddleware(AgentMiddleware):
         target = next((str(args[k]) for k in _TARGET_ARGS if args.get(k)), None)
         config = getattr(request.runtime, "config", None) or {}
         session_id = (config.get("configurable") or {}).get("thread_id")
+        final = notes.get("outcome", outcome)
+        duration_ms = round((time.perf_counter() - start) * 1000, 1)
+        emit(
+            ToolCallFinished(
+                call_id=call.get("id"), tool=call.get("name", "?"), outcome=final, duration_ms=duration_ms,
+                task_key=scope_ids().get("task_key"),
+            )
+        )  # fmt: skip
         await record(
             action=f"tool.{call.get('name', '?')}",
             outcome=notes.pop("outcome", outcome),

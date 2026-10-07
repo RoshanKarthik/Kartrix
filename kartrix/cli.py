@@ -3,6 +3,8 @@
 - ``kartrix`` — start the interactive session in the current directory.
 - ``kartrix stop`` — kill switch: stop every Kartrix run in progress on this machine
   (see :mod:`kartrix.security.kill_switch`). Imports almost nothing, so it works instantly.
+- ``kartrix run --spec <file>`` — one headless run (no prompts; approvals from the spec), JSON report
+  and exit code — see :mod:`kartrix.headless.runner`.
 - ``kartrix sandbox [status|check|reset]`` — which sandbox runs commands here (:mod:`kartrix.sandbox`),
   a live check of what it blocks, and (Windows) removing the folder access it was given.
 """
@@ -23,6 +25,17 @@ def main(argv: list[str] | None = None) -> int:
         description="Stops every Kartrix turn or /plan run in progress (in any terminal) at its next step; "
         "running commands are killed within a second. Kartrix itself keeps running.",
     )
+    run_parser = commands.add_parser(
+        "run",
+        help="run one task headless (no prompts) from a spec file; prints a JSON report",
+        description="Runs the spec's task in the current directory without asking anything: approvals come from the "
+        "spec's approvals section, a plan is approved as proposed. Exit code: 0 completed, 1 failed, 2 stopped "
+        "(budget / kill switch), 3 could not start.",
+    )
+    run_parser.add_argument("--spec", required=True, help="YAML run spec (see kartrix/headless/spec.py)")
+    run_parser.add_argument("--report", help="write the JSON report here instead of stdout")
+    run_parser.add_argument("--events", help="write every event as a JSON line to this file")
+    run_parser.add_argument("--quiet", action="store_true", help="no progress on stderr")
     sandbox = commands.add_parser(
         "sandbox",
         help="show which sandbox runs commands here, check it, or reset it",
@@ -32,6 +45,10 @@ def main(argv: list[str] | None = None) -> int:
     sandbox.add_argument("action", nargs="?", choices=["status", "check", "reset"], default="status")
     args = parser.parse_args(argv)
 
+    if args.command == "run":
+        from kartrix.headless.runner import run_headless
+
+        return run_headless(args.spec, args.report, args.events, args.quiet)
     if args.command == "sandbox":
         return _sandbox(args.action)
 

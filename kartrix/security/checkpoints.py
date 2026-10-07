@@ -41,6 +41,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from kartrix.config import settings
+from kartrix.core.events import FilesChanged, emit
 from kartrix.observability.logger import get_logger
 from kartrix.paths import user_data_dir
 from kartrix.security.command_policy import find_executable
@@ -371,11 +372,20 @@ def unavailable_reason() -> str | None:
     return _unavailable
 
 
+@dataclass
+class Tracked:
+    """Filled in when a :func:`track` block ends: the undo entry, if files changed."""
+
+    entry: Entry | None = None
+
+
 @asynccontextmanager
-async def track(label: str, session_id: str | None = None) -> AsyncIterator[None]:
-    """Snapshot before and after the block; an undo entry is kept if files changed.
-    Errors never stop the block — the change just isn't undoable."""
+async def track(label: str, session_id: str | None = None) -> AsyncIterator[Tracked]:
+    """Snapshot before and after the block; an undo entry is kept if files changed (and a
+    :class:`~kartrix.core.events.FilesChanged` event emitted). Errors never stop the block —
+    the change just isn't undoable."""
     store = _store
+    tracked = Tracked()
     before: str | None = None
     if store is not None:
         try:
@@ -383,11 +393,14 @@ async def track(label: str, session_id: str | None = None) -> AsyncIterator[None
         except (OSError, CheckpointError, subprocess.SubprocessError) as e:
             logger.error("Checkpoint before a run failed", extra={"error": str(e), "label": label})
     try:
-        yield
+        yield tracked
     finally:
         if store is not None and before is not None:
             try:
                 after = await asyncio.to_thread(store.snapshot)
-                await asyncio.to_thread(store.record, label, before, after, session_id)
+                tracked.entry = await asyncio.to_thread(store.record, label, before, after, session_id)
             except (OSError, CheckpointError, subprocess.SubprocessError) as e:
                 logger.error("Checkpoint after a run failed", extra={"error": str(e), "label": label})
+            if tracked.entry is not None:
+                entry = tracked.entry
+                emit(FilesChanged(label=entry.label, files=list(entry.files), count=entry.file_count))

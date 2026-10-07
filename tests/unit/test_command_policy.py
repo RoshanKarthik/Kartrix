@@ -12,7 +12,7 @@ from kartrix.config import settings
 from kartrix.sandbox.manager import set_sandbox
 from kartrix.security import permissions
 from kartrix.security import workspace as ws_mod
-from kartrix.security.command_policy import _Deny, _rule_matches, batch_command_line, evaluate, parse_command
+from kartrix.security.command_policy import _Deny, batch_command_line, evaluate, parse_command, rule_matches
 from kartrix.security.command_rules import Category, classify
 from kartrix.security.environment import is_secret_var, scrubbed_env
 from kartrix.security.workspace import set_workspace
@@ -348,11 +348,11 @@ def test_direct_url_installs_need_approval(root: Path) -> None:
 
 
 def test_rule_matching() -> None:
-    assert _rule_matches("npm run *", ["npm", "run", "build"])
-    assert _rule_matches("npm run *", ["npm", "run"])
-    assert _rule_matches("make test", [r"C:\bin\make.exe", "test"])
-    assert not _rule_matches("make test", ["make", "test", "extra"])
-    assert _rule_matches("git * --oneline", ["git", "log", "--oneline"])
+    assert rule_matches("npm run *", ["npm", "run", "build"])
+    assert rule_matches("npm run *", ["npm", "run"])
+    assert rule_matches("make test", [r"C:\bin\make.exe", "test"])
+    assert not rule_matches("make test", ["make", "test", "extra"])
+    assert rule_matches("git * --oneline", ["git", "log", "--oneline"])
 
 
 def test_user_rules(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,24 +1,48 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 from pathlib import Path
-
-from rich.console import Console
+from typing import Any, Literal
 
 from kartrix.context.indexers.pg_index import index_repo
+from kartrix.core.events import (
+    PlanProposed,
+    PlanReviewed,
+    Progress,
+    ProjectFinished,
+    ProjectStarted,
+    TaskFinished,
+    TaskStarted,
+    emit,
+    notice,
+)
+from kartrix.core.interaction import PlanReviewer
 from kartrix.observability.logger import get_logger
 from kartrix.security import checkpoints
 from kartrix.security.approvals import Approver
 from kartrix.security.audit import audit_scope
 from kartrix.security.budget import RunStopped, raise_if_stopped, waiting_for_user
-from kartrix.tasks.approval import present_plan_for_approval
 from kartrix.tasks.executor import run_subtask_agent
-from kartrix.tasks.planner import create_plan
+from kartrix.tasks.planner import ExecutionPlan, create_plan
 from kartrix.tasks.recovery import RecoveryManager
 from kartrix.tasks.task_store import ProjectStatus, TaskStore
 
 logger = get_logger(__name__)
-console = Console()
+
+ProjectOutcome = Literal["completed", "failed", "stopped", "planned"]
+
+
+@dataclass
+class PlanResult:
+    """What a /plan run did — for the REPL's summary and the headless report."""
+
+    project_id: str | None = None
+    status: ProjectOutcome | Literal["not_started"] = "not_started"
+    resumed: bool = False
+    plan: dict[str, Any] | None = None
+    tasks: list[dict[str, Any]] = field(default_factory=list)
+    stop_reason: str | None = None
 
 
 class TaskOrchestrator:
@@ -41,7 +65,7 @@ class TaskOrchestrator:
         self.approver = approver
         self.session_id = session_id
 
-    async def run(self, project_id: str) -> None:
+    async def run(self, project_id: str) -> ProjectOutcome:
         """
         Loop until all tasks reach a terminal state.
 
@@ -51,7 +75,6 @@ class TaskOrchestrator:
           3. Dispatch up to max_concurrent tasks
           4. Sleep 5s and repeat if waiting on in-progress tasks
         """
-        console.print(f"\n[bold blue]Starting execution for project {project_id}[/bold blue]\n")
         await self.store.set_project_status(project_id, ProjectStatus.RUNNING)
 
         while True:
@@ -59,32 +82,31 @@ class TaskOrchestrator:
             progress = await self.store.get_progress(project_id)
             pending = progress.get("pending", 0)
             in_progress = progress.get("in_progress", 0)
-            completed = progress.get("completed", 0)
-            failed = progress.get("failed", 0)
-            total = sum(progress.values())
-
-            console.print(
-                f"[dim]Progress: {completed}/{total} completed"
-                f" · {in_progress} in-progress"
-                f" · {pending} pending"
-                f" · {failed} failed[/dim]"
+            emit(
+                Progress(
+                    completed=progress.get("completed", 0),
+                    total=sum(progress.values()),
+                    in_progress=in_progress,
+                    pending=pending,
+                    failed=progress.get("failed", 0),
+                    blocked=progress.get("blocked", 0),
+                )
             )
             # all tasks are done - nothing in pending and nothing is in progress
             if pending == 0 and in_progress == 0:
                 ok = progress.get("failed", 0) == 0 and progress.get("blocked", 0) == 0
                 await self.store.set_project_status(project_id, ProjectStatus.COMPLETED if ok else ProjectStatus.FAILED)
-                _print_final_summary(progress)
-                break
+                outcome: ProjectOutcome = "completed" if ok else "failed"
+                emit(ProjectFinished(project_id=project_id, status=outcome, counts=progress))
+                return outcome
 
             ready = await self.store.get_ready_tasks(project_id)
             if not ready:
-                if in_progress > 0:
-                    console.print("[dim]⏳ Waiting for in-progress tasks...[/dim]")
-                else:
-                    console.print("[yellow]⚠ No tasks are ready — some may be blocked by failed dependencies.[/yellow]")
-                    console.print("[yellow]  Use /task_status to inspect.[/yellow]")
+                if in_progress == 0:
+                    notice("No tasks are ready — some are blocked by failed dependencies.", "warning")
                     await self.store.set_project_status(project_id, ProjectStatus.FAILED)
-                    break
+                    emit(ProjectFinished(project_id=project_id, status="failed", counts=progress))
+                    return "failed"
                 await asyncio.sleep(5)
                 continue
 
@@ -93,112 +115,117 @@ class TaskOrchestrator:
 
     async def _execute(self, project_id: str, task: dict) -> None:
         """Claim and execute a single task, handling retries via fail_task."""
-        console.print(f"\n[bold]▶ Starting:[/bold] [{task['id']}] {task['title']}")
-
-        if not await self.store.claim_task(project_id, task["id"]):
-            console.print(f"[dim]⚠ Task {task['id']} already claimed — skipping[/dim]")
+        key, title = task["id"], task["title"]
+        if not await self.store.claim_task(project_id, key):
+            logger.warning(f"Task {key} already claimed — skipping")
             return
+        emit(TaskStarted(task_key=key, title=title))
 
         try:
             # Fetch what dependency tasks actually produced and inject into the agent.
             dep_outputs = await self.store.get_dep_results(project_id, task["depends_on"])
 
             # A checkpoint before each task: /undo reverts the files it changed.
-            async with checkpoints.track(f"task {task['id']}: {task['title']}", self.session_id):
-                with audit_scope(session_id=self.session_id, project_id=project_id, task_key=task["id"]):
+            async with checkpoints.track(f"task {key}: {title}", self.session_id):
+                with audit_scope(session_id=self.session_id, project_id=project_id, task_key=key):
                     result = await run_subtask_agent(task, dep_outputs=dep_outputs, approver=self.approver)
-            await self.store.complete_task(project_id, task["id"], result)
-            console.print(f"[green]✅ Completed:[/green] [{task['id']}] {task['title']}")
+            await self.store.complete_task(project_id, key, result)
+            emit(TaskFinished(task_key=key, title=title, status="completed"))
 
         except (RunStopped, asyncio.CancelledError) as e:
             # Stopped, not failed: the task goes back to pending without using a retry.
             reason = e.reason if isinstance(e, RunStopped) else "stopped by the kill switch"
-            await self.store.release_task(project_id, task["id"], reason)
-            console.print(f"[yellow]⏸ Stopped:[/yellow]   [{task['id']}] {task['title']} — back to pending")
+            await self.store.release_task(project_id, key, reason)
+            emit(TaskFinished(task_key=key, title=title, status="stopped", detail=reason))
             raise
 
         except Exception as e:
             error_msg = str(e)
-            await self.store.fail_task(project_id, task["id"], error_msg)
-            console.print(f"[red]❌ Failed:[/red]    [{task['id']}] {task['title']}: {error_msg[:120]}")
-            logger.error(f"Task {task['id']} failed: {error_msg}")
+            await self.store.fail_task(project_id, key, error_msg)
+            emit(TaskFinished(task_key=key, title=title, status="failed", detail=error_msg[:500]))
+            logger.error(f"Task {key} failed: {error_msg}")
 
 
-async def handle_plan_command(goal: str, session_id: str | None = None, approver: Approver | None = None) -> None:
+async def _plan(goal: str, reviewer: PlanReviewer) -> ExecutionPlan:
+    """Plan → review → re-plan with feedback until the reviewer approves."""
+    extra_context = ""
+    while True:
+        notice("Planning (this may take a moment)...")
+        raw_plan = await asyncio.to_thread(create_plan, goal, extra_context)
+        emit(PlanProposed(plan=raw_plan.model_dump(mode="json")))
+        with waiting_for_user():  # reading the plan doesn't use the time budget
+            review = await reviewer(raw_plan)
+        raise_if_stopped()
+        emit(PlanReviewed(approved=review.plan is not None, by=review.by, feedback=review.feedback or None))
+        if review.plan is not None:
+            return review.plan
+        extra_context = review.feedback.strip()
+
+
+async def handle_plan_command(
+    goal: str,
+    session_id: str | None = None,
+    approver: Approver | None = None,
+    reviewer: PlanReviewer | None = None,
+    *,
+    resume: Literal["any", "same_goal"] = "any",
+    plan_only: bool = False,
+) -> PlanResult:
     """
-    Full /plan flow — entry point called by main.py.
+    Full /plan flow:
 
-      1. Check DB for an unfinished (approved/running) project of this repo → resume + recover
-      2. Otherwise: plan → human approval loop → persist → execute
+      1. An unfinished (approved/running) project of this repo → resume + recover it
+         (``resume="same_goal"``: only one with exactly this goal — headless runs)
+      2. Otherwise: plan → review loop → persist → execute (``plan_only``: stop after saving)
 
-    ``approver`` answers the tasks' command approvals; without one they are refused.
+    ``approver`` answers the tasks' command approvals (without one they are refused);
+    ``reviewer`` approves the plan (without one it is approved as proposed).
     """
+    from kartrix.core.interaction import approve_plan_as_is
+
     store = TaskStore()
-    recover = RecoveryManager(store)
     repo_path = str(Path.cwd().resolve())
+    result = PlanResult()
 
-    project_id = await store.get_resumable_project(repo_path)
+    project_id = await store.get_resumable_project(repo_path, goal if resume == "same_goal" else None)
     if project_id:
-        console.print(f"\n[yellow]↩ Resuming unfinished project {project_id}...[/yellow]")
-        recovered = await recover.recover(project_id)
-        if recovered:
-            console.print(f"[dim]Recovered {recovered} crashed task(s)[/dim]")
+        result.resumed = True
+        recovered = await RecoveryManager(store).recover(project_id)
+        emit(ProjectStarted(project_id=project_id, resumed=True, recovered=recovered))
     else:
-        console.print("\n[dim]Planning with LLM (this may take a moment)...[/dim]")
-        extra_context = ""
-        approved_plan = None
-
         try:
-            while approved_plan is None:
-                raw_plan = await asyncio.to_thread(create_plan, goal, extra_context)
-                with waiting_for_user():  # reading the plan doesn't use the time budget
-                    approved_plan = await asyncio.to_thread(present_plan_for_approval, raw_plan)
-                raise_if_stopped()
-                if approved_plan is None:
-                    with waiting_for_user():
-                        feedback = await asyncio.to_thread(input, "What should change in the re-plan?\n> ")
-                    extra_context = feedback.strip()
-                    console.print("\n[dim]Re-planning with your feedback...[/dim]")
+            plan = await _plan(goal, reviewer or approve_plan_as_is)
         except RunStopped as e:
-            console.print(f"\n[yellow]⏸ Planning stopped: {e.reason}. Nothing was saved.[/yellow]")
-            return
+            notice(f"Planning stopped: {e.reason}. Nothing was saved.", "warning")
+            result.status, result.stop_reason = "stopped", e.reason
+            return result
+        result.plan = plan.model_dump(mode="json")
+        project_id = await store.create_project(goal, plan, repo_path, session_id)
+        emit(ProjectStarted(project_id=project_id, resumed=False))
+    result.project_id = project_id
 
-        project_id = await store.create_project(goal, approved_plan, repo_path, session_id)
-        console.print(f"\n[dim]Project {project_id} saved.[/dim]")
+    if plan_only:
+        result.status = "planned"
+        result.tasks = await store.get_all_tasks(project_id)
+        emit(ProjectFinished(project_id=project_id, status="planned"))
+        return result
 
     orchestrator = TaskOrchestrator(store, max_concurrent=1, approver=approver, session_id=session_id)
     try:
-        await orchestrator.run(project_id)
+        result.status = await orchestrator.run(project_id)
     except RunStopped as e:
-        console.print(f"\n[yellow]⏸ Plan stopped: {e.reason}.[/yellow]")
-        console.print("[yellow]  Run /plan again to continue where it stopped (with a new budget).[/yellow]")
-        return
+        result.status, result.stop_reason = "stopped", e.reason
+        emit(ProjectFinished(project_id=project_id, status="stopped", counts=await store.get_progress(project_id)))
+    result.tasks = await store.get_all_tasks(project_id)
+    if result.status == "stopped":
+        return result
 
-    # Re-index the project directory so /ask follow-up questions can find
-    # the files that were just generated by the plan tasks.
-    console.print("\n[dim]Re-indexing generated files so /ask can query them...[/dim]")
+    # Re-index so follow-up questions can find the files the tasks just generated.
+    notice("Re-indexing generated files...")
     try:
         await index_repo(Path.cwd())
-        console.print("[green]✓ Index updated — you can now use /ask to ask about the generated code.[/green]")
+        notice("Index updated — questions can now find the generated code.", "success")
     except Exception as e:
         logger.warning(f"Re-index after /plan failed: {e}")
-        console.print(f"[yellow]⚠ Re-index failed: {e}[/yellow]")
-
-
-def _print_final_summary(progress: dict[str, int]) -> None:
-    completed = progress.get("completed", 0)
-    failed = progress.get("failed", 0)
-    blocked = progress.get("blocked", 0)
-    skipped = progress.get("skipped", 0)
-
-    if failed == 0 and blocked == 0:
-        console.print(f"\n[bold green]🎉 All {completed} tasks completed successfully![/bold green]")
-    else:
-        console.print("\n[bold yellow]⚠ Execution finished with issues:[/bold yellow]")
-        console.print(f"  ✅ Completed: {completed}")
-        if failed:
-            console.print(f"  ❌ Failed:    {failed}  (run /task_status to review)")
-        if blocked:
-            console.print(f"  🚫 Blocked:   {blocked}  (dependencies failed)")
-        if skipped:
-            console.print(f"  ⏭ Skipped:   {skipped}")
+        notice(f"Re-index failed: {e}", "warning")
+    return result

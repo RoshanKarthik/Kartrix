@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from rich.console import Console
-
+from kartrix.core.events import notice
 from kartrix.observability.logger import get_logger
 from kartrix.tasks.task_store import TaskStore
 
 logger = get_logger(__name__)
-console = Console()
 
 
 class RecoveryManager:
@@ -31,13 +29,11 @@ class RecoveryManager:
         crashed = await self.store.recover_crashed(project_id)
         for task in crashed:
             if task["status"] == "pending":
-                console.print(
-                    f"[yellow]🔄 Recovered:[/yellow] {task['key']} ({task['title']}) "
-                    f"→ PENDING (retry {task['retry_count']}/{task['max_retries']})"
+                notice(
+                    f"Recovered {task['key']} ({task['title']}) → pending "
+                    f"(retry {task['retry_count']}/{task['max_retries']})",
+                    "warning",
                 )
             else:
-                console.print(f"[red]❌ Max retries exhausted:[/red] {task['key']} → FAILED")
-
-        if crashed:
-            console.print(f"[dim]Recovery complete: {len(crashed)} task(s) processed.[/dim]\n")
+                notice(f"Max retries used up: {task['key']} → failed", "error")
         return len(crashed)

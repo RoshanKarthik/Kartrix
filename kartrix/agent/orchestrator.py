@@ -1,19 +1,37 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
 from kartrix.config import settings
 from kartrix.observability.logger import get_logger
 from kartrix.security.approvals import Approver, run_agent
+from kartrix.security.budget import current as current_budget
 
 logger = get_logger(__name__)
 
 
+@dataclass(frozen=True)
+class QueryAnswer:
+    text: str
+    cached: bool = False  # served from the semantic cache: the agent didn't run
+
+
+def _text(content: Any) -> str:
+    if isinstance(content, list):  # content blocks (Anthropic)
+        return " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+    return str(content or "")
+
+
 async def handle_query(
-    agent,
+    agent: Any,
     question: str,
     thread_id: str,
     approver: Approver,
-    semantic_cache=None,
+    semantic_cache: Any = None,
     cache_domain: str | None = None,
-) -> str:
-    """Entry point for all user queries - invokes the agent.
+) -> QueryAnswer:
+    """Answer one chat request with the agent; agent errors propagate to the caller.
 
     When semantic_cache/cache_domain are provided, a cache hit returns the
     stored answer directly and skips the agent (and every tool call it would
@@ -32,21 +50,19 @@ async def handle_query(
             cached_response = None
         if cached_response is not None:
             logger.info("Semantic cache HIT - skipping agent/tool calls")
-            return cached_response
+            return QueryAnswer(cached_response, cached=True)
 
     agent_config = {"configurable": {"thread_id": thread_id}}
-    try:
-        response = await run_agent(agent, {"messages": [{"role": "user", "content": question}]}, agent_config, approver)
-        answer = response["messages"][-1].content
-    except Exception as e:
-        logger.error(f"Agent error: {e}")
-        return f"Error: {e}"
+    response = await run_agent(agent, {"messages": [{"role": "user", "content": question}]}, agent_config, approver)
+    answer = _text(response["messages"][-1].content) if response.get("messages") else ""
 
-    if semantic_cache is not None and cache_domain is not None:
+    run = current_budget()
+    stopped = run is not None and run.stop_reason is not None  # never cache a "Stopped: …" answer
+    if semantic_cache is not None and cache_domain is not None and answer and not stopped:
         try:
             ttl = settings.semantic_cache.ttl
             await semantic_cache.put(question, answer, domain=cache_domain, model=model, ttl=ttl)
         except Exception as e:
             logger.warning(f"Semantic cache store failed: {e}")
 
-    return answer
+    return QueryAnswer(answer)

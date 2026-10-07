@@ -1,0 +1,90 @@
+"""The REPL's view of the event stream: renders core events with Rich.
+
+Questions are not events — approvals go through :class:`~kartrix.ui.approval_prompt.ConsoleApprover`
+and plan reviews through :func:`kartrix.ui.plan_review.review_plan`. Text from the model, tools or
+files is printed without interpreting Rich markup.
+"""
+
+from __future__ import annotations
+
+from rich.console import Console
+from rich.markup import escape
+
+from kartrix.core import events as ev
+
+_NOTICE_STYLE = {"info": "dim", "success": "green", "warning": "yellow", "error": "red"}
+_NOTICE_PREFIX = {"success": "✓ ", "warning": "", "error": "", "info": ""}
+
+
+class ConsoleRenderer:
+    def __init__(self, console: Console | None = None, *, show_tool_calls: bool = True) -> None:
+        self.console = console or Console()
+        self.show_tool_calls = show_tool_calls
+
+    def _line(self, text: str, style: str = "") -> None:
+        self.console.print(f"[{style}]{escape(text)}[/{style}]" if style else escape(text))
+
+    def __call__(self, event: ev.Event) -> None:
+        match event:
+            case ev.Notice(level=level, text=text):
+                self._line(_NOTICE_PREFIX[level] + text, _NOTICE_STYLE[level])
+            case ev.RunStarted(kind="ask", input=question):
+                self._line(f"Working on: {question[:200]}… (Ctrl+C stops)", "dim")
+            case ev.AssistantMessage(text=text, cached=cached):
+                if cached:
+                    self._line("(answer from the semantic cache)", "dim")
+                self.console.print(text, markup=False, highlight=False)
+            case ev.RunFinished(status="error", detail=detail):
+                self._line(f"Error: {detail}", "red")
+            case ev.ToolCallStarted(tool=tool, target=target) if self.show_tool_calls:
+                self._line(f"  → {tool} {(target or '')[:120]}".rstrip(), "dim")
+            case ev.ToolCallFinished(tool=tool, outcome=outcome) if self.show_tool_calls and outcome != "ok":
+                self._line(f"  ✗ {tool}: {outcome}", "yellow" if outcome in ("declined", "stopped") else "red")
+            case ev.PlanReviewed(approved=False):
+                self._line("Re-planning with your feedback...", "dim")
+            case ev.ProjectStarted(project_id=pid, resumed=True, recovered=recovered):
+                more = f" ({recovered} crashed task(s) recovered)" if recovered else ""
+                self._line(f"↩ Resuming unfinished project {pid}{more}", "yellow")
+            case ev.ProjectStarted(project_id=pid, resumed=False):
+                self._line(f"Project {pid} saved.", "dim")
+            case ev.Progress(completed=c, total=t, in_progress=i, pending=p, failed=f):
+                self._line(f"Progress: {c}/{t} completed · {i} in progress · {p} pending · {f} failed", "dim")
+            case ev.TaskStarted(task_key=key, title=title):
+                self.console.print("\n[bold]▶ Starting:[/bold] " + escape(f"[{key}] {title}"))
+            case ev.TaskFinished(task_key=key, title=title, status=status, detail=detail):
+                self._task_finished(key, title, status, detail)
+            case ev.ProjectFinished(status=status, counts=counts):
+                self._project_finished(status, counts)
+            case ev.FilesChanged(count=count):
+                self._line(f"Changed {count} file(s) — /undo reverts them", "dim")
+            case _:
+                pass
+
+    def _task_finished(self, key: str, title: str, status: str, detail: str | None) -> None:
+        name = escape(f"[{key}] {title}")
+        if status == "completed":
+            self.console.print(f"[green]✅ Completed:[/green] {name}")
+        elif status == "stopped":
+            self.console.print(f"[yellow]⏸ Stopped:[/yellow]   {name} — back to pending")
+        else:
+            self.console.print(f"[red]❌ Failed:[/red]    {name}: {escape((detail or '')[:120])}")
+
+    def _project_finished(self, status: str, counts: dict[str, int]) -> None:
+        if status == "planned":
+            self._line("Plan saved — run /plan again to execute it.", "dim")
+            return
+        if status == "stopped":
+            self._line("⏸ Plan stopped. Run /plan again to continue where it stopped (with a new budget).", "yellow")
+            return
+        completed, failed, blocked = counts.get("completed", 0), counts.get("failed", 0), counts.get("blocked", 0)
+        if status == "completed":
+            self.console.print(f"\n[bold green]🎉 All {completed} tasks completed successfully![/bold green]")
+            return
+        self.console.print("\n[bold yellow]⚠ Execution finished with issues:[/bold yellow]")
+        self.console.print(f"  ✅ Completed: {completed}")
+        if failed:
+            self.console.print(f"  ❌ Failed:    {failed}  (run /task_status to review)")
+        if blocked:
+            self.console.print(f"  🚫 Blocked:   {blocked}  (dependencies failed)")
+        if skipped := counts.get("skipped", 0):
+            self.console.print(f"  ⏭ Skipped:   {skipped}")

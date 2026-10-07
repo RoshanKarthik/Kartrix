@@ -335,7 +335,7 @@ def _check_install(argv: list[str], cls: Classification, cwd: Path, ws: Workspac
 # ── user rules ────────────────────────────────────────────────────────
 
 
-def _rule_matches(rule: str, argv: list[str]) -> bool:
+def rule_matches(rule: str, argv: list[str]) -> bool:
     try:
         tokens = shlex.split(rule, posix=True)
     except ValueError:
@@ -355,7 +355,7 @@ def _rule_matches(rule: str, argv: list[str]) -> bool:
 def _user_rule(argv: list[str]) -> Action | None:
     cfg = settings.permissions
     for action, rules in ((_DENY, cfg.deny), (_ASK, cfg.ask), (_ALLOW, cfg.allow)):
-        if any(_rule_matches(r, argv) for r in rules):
+        if any(rule_matches(r, argv) for r in rules):
             return action
     return None
 

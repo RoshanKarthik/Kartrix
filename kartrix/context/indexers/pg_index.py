@@ -20,6 +20,7 @@ import hashlib
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import ColumnClause, Text, cast, delete, func, insert, literal_column, select, update
 
@@ -305,29 +306,13 @@ async def remove_file(repo_root: str | Path, path: str | Path) -> None:
     logger.info("Removed file from index", extra={"path": rel})
 
 
-async def show_index(repo_root: str | Path, limit: int = 30) -> None:
-    """Print a summary of what is indexed for ``repo_root``."""
-    from rich.console import Console
-    from rich.table import Table
-
-    console = Console()
+async def indexed_files(repo_root: str | Path) -> list[Any]:
+    """(path, chunk_count, indexed_at) of every file indexed for ``repo_root``, sorted by path."""
     root_key = repo_key(repo_root)
     async with session_scope() as s:
-        files = (
-            await s.execute(
-                select(CodeFile.path, CodeFile.chunk_count, CodeFile.indexed_at)
-                .where(CodeFile.repo_root == root_key)
-                .order_by(CodeFile.path)
-            )
-        ).all()
-    total = sum(f.chunk_count for f in files)
-    console.print(
-        f"\n[bold]Code index — {len(files)} files, {total} chunks[/bold] "
-        f"[dim]({settings.embeddings.model}, halfvec({EMBEDDING_DIMS}))[/dim]\n"
-    )
-    table = Table("File", "Chunks", "Indexed at")
-    for f in files[:limit]:
-        table.add_row(f.path, str(f.chunk_count), f.indexed_at.strftime("%Y-%m-%d %H:%M"))
-    console.print(table)
-    if len(files) > limit:
-        console.print(f"[dim]… and {len(files) - limit} more files[/dim]")
+        rows = await s.execute(
+            select(CodeFile.path, CodeFile.chunk_count, CodeFile.indexed_at)
+            .where(CodeFile.repo_root == root_key)
+            .order_by(CodeFile.path)
+        )
+        return list(rows.all())

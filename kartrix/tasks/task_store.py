@@ -109,17 +109,13 @@ class TaskStore:
         logger.info(f"Project {project_id} created with {len(plan.tasks)} tasks")
         return project_id
 
-    async def get_resumable_project(self, repo_path: str) -> str | None:
-        """Most recent approved/running project for this repo, or None."""
+    async def get_resumable_project(self, repo_path: str, goal: str | None = None) -> str | None:
+        """Most recent approved/running project for this repo (with exactly ``goal``, if given), or None."""
+        query = select(Project.id).where(Project.repo_path == repo_path, Project.status.in_(_RESUMABLE))
+        if goal is not None:
+            query = query.where(Project.goal == goal)
         async with session_scope() as s:
-            pid = (
-                await s.execute(
-                    select(Project.id)
-                    .where(Project.repo_path == repo_path, Project.status.in_(_RESUMABLE))
-                    .order_by(Project.created_at.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
+            pid = (await s.execute(query.order_by(Project.created_at.desc()).limit(1))).scalar_one_or_none()
         return str(pid) if pid else None
 
     async def get_latest_project(self, repo_path: str) -> str | None:
