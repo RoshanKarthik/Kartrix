@@ -66,10 +66,22 @@ def _workspace(task, tmp_path: Path, with_solution: bool) -> Path:
     return ws
 
 
+def _node_skip_reason() -> str | None:
+    """The TypeScript apps run their .ts files directly, which needs Node's type stripping (23.6+)."""
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        return "node is not installed"
+    out = subprocess.run([node, "--version"], capture_output=True, text=True, check=False).stdout.strip()
+    major, minor = (int(p) for p in out.lstrip("v").split(".")[:2])
+    return None if (major, minor) >= (23, 6) else f"node {out} is too old (the TypeScript tasks need 23.6+)"
+
+
 @pytest.mark.parametrize("task", [t for t in TASKS if t.check], ids=lambda t: t.id)
 def test_task_check_fails_before_and_passes_with_solution(task, tmp_path):
-    if task.stack == "typescript" and shutil.which("node") is None:
-        pytest.skip("node is not installed")
+    if task.stack == "typescript" and (reason := _node_skip_reason()):
+        pytest.skip(reason)
     assert (task.folder / "solution").is_dir(), "a task with checks needs a reference solution"
     before = [run_check(step, _workspace(task, tmp_path / "before", False)) for step in task.check]
     assert not all(c["ok"] for c in before), "the checks already pass on the untouched app: the task is trivial"

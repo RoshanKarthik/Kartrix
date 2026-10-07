@@ -20,7 +20,7 @@ from kartrix.security.workspace import Workspace
 from kartrix.tools.process_runner import run_launch
 
 _PROBE = r"""
-import os, socket
+import os, socket, tempfile
 from pathlib import Path
 def t(name, fn):
     try:
@@ -31,7 +31,7 @@ t("write_workspace", lambda: Path("out.txt").write_text("x"))
 t("read_env", lambda: Path(".env").read_text())
 t("write_git", lambda: Path(".git/hooks/pre-commit").write_text("x"))
 t("write_outside", lambda: Path(os.environ["KARTRIX_OUTSIDE"]).write_text("x"))
-t("write_temp", lambda: Path(os.environ["TEMP" if os.name == "nt" else "TMPDIR"], "probe.txt").write_text("x"))
+t("write_temp", lambda: Path(os.environ.get("TEMP" if os.name == "nt" else "TMPDIR") or tempfile.gettempdir(), "probe.txt").write_text("x"))
 t("network", lambda: socket.create_connection(("pypi.org", 443), timeout=5).close())
 """
 
