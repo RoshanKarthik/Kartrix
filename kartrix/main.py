@@ -2,10 +2,11 @@ import asyncio
 from pathlib import Path
 
 from rich.console import Console
+from rich.markup import escape
 from rich.prompt import Prompt
 from rich.table import Table
 
-from kartrix.agent.factory import build_agent
+from kartrix.agent.factory import NATIVE_TOOLS, build_agent
 from kartrix.agent.orchestrator import handle_query
 from kartrix.cache.semantic_cache import build_semantic_cache, get_repo_domain
 from kartrix.config import settings
@@ -13,6 +14,7 @@ from kartrix.context.indexers.pg_index import index_repo, show_index
 from kartrix.context.indexers.watcher import start_watcher, stop_watcher
 from kartrix.db.engine import dispose_engine
 from kartrix.llm.factory import get_embedder, get_llm
+from kartrix.mcp.mcp_client import McpError, McpManager
 from kartrix.memory.session import (
     InvalidSessionIdError,
     get_current_session,
@@ -22,11 +24,13 @@ from kartrix.memory.session import (
 )
 from kartrix.memory.short_term import get_checkpointer
 from kartrix.observability.logger import get_logger
-from kartrix.security import audit
+from kartrix.security import audit, external_tools
 from kartrix.security.approval_prompt import ConsoleApprover
 from kartrix.security.approvals import resume_pending
 from kartrix.security.permissions import MODES, clear_session_allowances, get_mode, set_mode
 from kartrix.security.workspace import set_workspace
+from kartrix.skills.registry import SkillNotFoundError
+from kartrix.skills.skill_tools import get_registry
 from kartrix.tasks.orchestrator import handle_plan_command
 from kartrix.tasks.status import show_task_status
 
@@ -84,6 +88,87 @@ async def finish_pending_approval(agent, session_id: str) -> None:
         console.print(result["messages"][-1].content)
 
 
+async def handle_mcp_command(command: str, arg: str, mcp: McpManager, session_id: str) -> bool:
+    """/mcp, /connect <server>, /disconnect <server>. True if the agent's tools changed."""
+    if command == "/mcp" or not arg:
+        try:
+            servers = McpManager.available()
+        except McpError as e:
+            console.print(f"[red]{e}[/red]")
+            return False
+        table = Table(title="MCP servers")
+        for col in ("server", "status", "tools", "description"):
+            table.add_column(col)
+        for name, server in servers.items():
+            connected = name in mcp.connected
+            count = sum(1 for t in mcp.tools if (ext := external_tools.get(t.name)) and ext.server == name)
+            status = "[green]connected[/green]" if connected else "off"
+            table.add_row(name, status, str(count) if connected else "", server.description)
+        console.print(table)
+        console.print("[dim]/connect <server> to turn one on; it stays on for later sessions until /disconnect.[/dim]")
+        return False
+    if command == "/connect":
+        console.print(f"[dim]Connecting {arg} (on first use the server is downloaded and verified)...[/dim]")
+        try:
+            tools = await mcp.connect(arg)
+        except McpError as e:
+            console.print(f"[red]{e}[/red]")
+            await audit.record(actor="user", action="mcp.connect", target=arg, outcome="error", session_id=session_id)
+            return False
+        approve = sum(1 for t in tools if (ext := external_tools.get(t.name)) and ext.needs_approval)
+        console.print(f"[green]✓ {arg} connected: {len(tools)} tools ({approve} need your approval to run).[/green]")
+        await audit.record(
+            actor="user", action="mcp.connect", target=arg, outcome="ok", session_id=session_id,
+            details={"tools": [t.name for t in tools]},
+        )  # fmt: skip
+        return True
+    await mcp.disconnect(arg)
+    console.print(f"[dim]{arg} disconnected.[/dim]")
+    await audit.record(actor="user", action="mcp.disconnect", target=arg, outcome="ok", session_id=session_id)
+    return True
+
+
+async def handle_skills_command(arg: str, session_id: str) -> bool:
+    """/skills, /skills trust <name>, /skills untrust <name>. True if the trusted set changed."""
+    registry = get_registry()
+    action, _, name = arg.partition(" ")
+    if action in ("trust", "untrust") and name.strip():
+        name = name.strip()
+        try:
+            if action == "untrust":
+                registry.untrust(name)
+                console.print(f"[dim]Skill {name} is no longer approved.[/dim]")
+            else:
+                skill = registry.trust(name)
+                console.print(f"[green]✓ Skill {name} approved[/green] [dim](sha256 {skill.digest[:16]}…)[/dim]")
+        except SkillNotFoundError as e:
+            console.print(f"[red]{e}[/red]")
+            return False
+        await audit.record(actor="user", action=f"skills.{action}", target=name, outcome="ok", session_id=session_id)
+        return True
+    if arg:
+        console.print("[yellow]Usage: /skills, /skills trust <name>, /skills untrust <name>[/yellow]")
+        return False
+
+    skills = registry.skills()
+    if not skills:
+        console.print("[dim]This repo has no skills (.kartrix/skills/).[/dim]")
+        return False
+    colors = {"trusted": "green", "untrusted": "yellow", "changed": "red"}
+    for skill in skills:
+        status = registry.status(skill.name)
+        files = [p for p in sorted(skill.skill_dir.rglob("*")) if p.is_file()]
+        console.print(
+            f"[bold]{skill.name}[/bold] [{colors[status]}]{status}[/{colors[status]}] — {escape(skill.description)}"
+        )
+        console.print(f"  [dim]{len(files)} files in {skill.skill_dir.relative_to(Path.cwd()).as_posix()}[/dim]")
+        if skill.findings:
+            rules = ", ".join(sorted({f.rule for f in skill.findings}))
+            console.print(f"  [red]⚠ contains text that looks like prompt injection ({rules})[/red]")
+    console.print("[dim]Review a skill's files before approving it: /skills trust <name>[/dim]")
+    return False
+
+
 async def initialize(checkpointer):
     """Bootstrap LLM, embedder, index, watcher, MCP tools, cache, and session before the REPL starts."""
     # Built once up front so a missing API key or bad provider config fails at startup.
@@ -111,13 +196,25 @@ async def initialize(checkpointer):
             await semantic_cache.invalidate_domain(cache_domain)
 
     observer = start_watcher(repo_path, loop, on_change=_invalidate_cache_on_change)
-    agent = await build_agent(checkpointer)
+
+    mcp = McpManager(t.name for t in NATIVE_TOOLS)
+    for name, error in (await mcp.connect_remembered()).items():
+        console.print(f"[yellow]MCP server {name} not connected: {error}[/yellow]")
+    if mcp.connected:
+        console.print(f"[dim]MCP: {', '.join(mcp.connected)} ({len(mcp.tools)} tools)[/dim]")
+    pending_skills = [s.name for s in get_registry().skills() if get_registry().status(s.name) != "trusted"]
+    if pending_skills:
+        console.print(
+            f"[yellow]This repo has skills you haven't approved: {', '.join(pending_skills)} — see /skills[/yellow]"
+        )
+
+    agent = build_agent(checkpointer, mcp.tools)
     session_id = get_current_session()
     await record_session(session_id, repo_path)
     console.print(f"[dim]Session: {session_id}[/dim]")
     console.print("[green]✓ Ready[/green]\n")
     await finish_pending_approval(agent, session_id)
-    return agent, session_id, observer, semantic_cache, cache_domain
+    return agent, session_id, observer, semantic_cache, cache_domain, mcp
 
 
 async def _run_async():
@@ -125,7 +222,7 @@ async def _run_async():
     console.print("\n[bold blue]Kartrix[/bold blue] — RAG-powered code assistant")
 
     checkpointer = get_checkpointer()
-    agent, session_id, observer, semantic_cache, cache_domain = await initialize(checkpointer)
+    agent, session_id, observer, semantic_cache, cache_domain, mcp = await initialize(checkpointer)
     console.print("Type [bold]'/exit'[/bold] to quit\n")
 
     try:
@@ -205,6 +302,13 @@ async def _run_async():
                             details={"previous": previous},
                         )
                 console.print(f"[dim]Permission mode: {get_mode()} (available: {', '.join(MODES)})[/dim]")
+            elif user_input.split()[0] in ("/mcp", "/connect", "/disconnect"):
+                command, _, arg = user_input.partition(" ")
+                if await handle_mcp_command(command, arg.strip(), mcp, session_id):
+                    agent = build_agent(checkpointer, mcp.tools)
+            elif user_input == "/skills" or user_input.startswith("/skills "):
+                if await handle_skills_command(user_input.removeprefix("/skills").strip(), session_id):
+                    agent = build_agent(checkpointer, mcp.tools)
             else:
                 logger.warning(f"Unknown command received: {user_input}")
                 console.print("[yellow]Unknown command. Try:[/yellow]")
@@ -218,7 +322,12 @@ async def _run_async():
                 console.print("  [bold]/task_status[/bold]             — show task progress for active project")
                 console.print("  [bold]/mode [read_only|default|auto][/bold] — show or change the permission mode")
                 console.print("  [bold]/audit [n][/bold]                — show this session's last n tool calls")
+                console.print("  [bold]/mcp[/bold]                     — list MCP servers")
+                console.print("  [bold]/connect <server>[/bold]        — connect an MCP server (e.g. github)")
+                console.print("  [bold]/disconnect <server>[/bold]     — disconnect it")
+                console.print("  [bold]/skills [trust|untrust <name>][/bold] — review this repo's skills")
     finally:
+        await mcp.close()  # same task that opened the sessions
         stop_watcher(observer)
         await dispose_engine()
 

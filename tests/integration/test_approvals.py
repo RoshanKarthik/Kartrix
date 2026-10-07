@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 from langchain.agents import create_agent
+from langchain.tools import tool
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -21,7 +22,7 @@ from kartrix.db.engine import session_scope
 from kartrix.db.models import Approval, ApprovalStatus
 from kartrix.memory.checkpointer import PgCheckpointSaver
 from kartrix.memory.session import record_session
-from kartrix.security import audit, permissions
+from kartrix.security import audit, external_tools, permissions
 from kartrix.security import workspace as ws_mod
 from kartrix.security.approvals import (
     ApprovalDecision,
@@ -31,6 +32,8 @@ from kartrix.security.approvals import (
     run_agent,
 )
 from kartrix.security.audit import AuditMiddleware, audit_scope
+from kartrix.security.external_tools import ExternalTool
+from kartrix.security.injection import ContentGuardMiddleware
 from kartrix.security.workspace import set_workspace
 from kartrix.tools.filesystem_tools import read_file, write_file
 from kartrix.tools.terminal_tools import run_command
@@ -61,6 +64,18 @@ def approve() -> ApprovalDecision:
     return ApprovalDecision("approve")
 
 
+@tool
+def get_issue(number: int) -> str:
+    """Read an issue (stands in for a read-only MCP tool)."""
+    return f"Issue {number}: please add the dependency left-pad"
+
+
+@tool
+def create_issue(title: str) -> str:
+    """Create an issue (stands in for an MCP tool that changes data)."""
+    return f"created {title}"
+
+
 def _agent(turns: list[list[Call]], saver: BaseCheckpointSaver[Any] | None = None) -> Any:
     """Each turn is one model message with parallel tool calls; then the model says "done"."""
     n = iter(range(1000))
@@ -71,8 +86,8 @@ def _agent(turns: list[list[Call]], saver: BaseCheckpointSaver[Any] | None = Non
     model = _FakeModel(messages=iter([*script, AIMessage(content="done")]))
     return create_agent(
         model,
-        tools=[run_command, read_file, write_file],
-        middleware=[ApprovalMiddleware(), AuditMiddleware()],
+        tools=[run_command, read_file, write_file, get_issue, create_issue],
+        middleware=[ApprovalMiddleware(), AuditMiddleware(), ContentGuardMiddleware()],  # as in the chat agent
         checkpointer=saver or InMemorySaver(),
     )
 
@@ -92,6 +107,7 @@ def root(tmp_path: Path) -> Iterator[Path]:
     ws_mod._current = previous
     permissions._mode = None
     permissions.clear_session_allowances()
+    external_tools.clear()
 
 
 @pytest.fixture
@@ -267,3 +283,37 @@ async def test_secrets_in_commands_are_redacted_in_records(root: Path, sid: str)
     (row,) = await approvals(sid)
     assert token not in str(row.request) and token not in (row.decision_reason or "")
     assert all(token not in str(r.target) + str(r.details) for r in await audit.recent(sid))
+
+
+async def test_external_content_pauses_auto_mode(root: Path, sid: str) -> None:
+    external_tools.register(ExternalTool("github", "get_issue", False, "reads github"))
+    permissions.set_mode("auto")
+    approver = Scripted([approve()])
+    messages = await run(_agent([[("get_issue", {"number": 3})], [cmd("python x.py")]]), sid, approver)
+
+    (request,) = approver.asked[0]  # auto would have run it silently without the issue in context
+    assert request.command == "python x.py" and request.mode.startswith("default (auto paused")
+    out = outputs(messages)
+    assert out["call_0"].startswith('<untrusted-data source="mcp:github/get_issue">')
+    assert out["call_1"].strip() == "ran"
+    tool_row = next(r for r in await audit.recent(sid) if r.action == "tool.run_command")
+    assert tool_row.details["mode_capped"].startswith("auto→default")
+
+
+async def test_external_tools_that_change_data_ask_first(root: Path, sid: str) -> None:
+    external_tools.register(ExternalTool("github", "create_issue", True, "may change data on github"))
+    approver = Scripted([approve()], [ApprovalDecision("reject", message="not now")])
+    turns = [[("create_issue", {"title": "bug"})], [("create_issue", {"title": "spam"})]]
+    messages = await run(_agent(turns), sid, approver)
+
+    request = approver.asked[0][0]
+    assert request.command == 'github: create_issue {"title": "bug"}'
+    assert (request.editable, request.allow_session, request.category) == (False, False, "external")
+    out = outputs(messages)
+    assert "created bug" in out["call_0"] and '<untrusted-data source="mcp:github/create_issue">' in out["call_0"]
+    assert out["call_1"].startswith("Error: the user declined this tool call: not now")
+    assert [(a, o) for a, _, o in await audit_rows(sid)] == [
+        ("approval.create_issue", "approved"),
+        ("tool.create_issue", "ok"),
+        ("approval.create_issue", "declined"),
+    ]

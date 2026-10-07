@@ -36,7 +36,7 @@ logger = get_logger(__name__)
 
 _ARG_CHARS = 2000  # per string argument
 _PREVIEW_CHARS = 500
-_TARGET_ARGS = ("command", "file_path", "path", "directory", "pattern", "query", "skill_name")
+_TARGET_ARGS = ("command", "file_path", "path", "directory", "pattern", "query", "skill_name", "name")
 
 _scope: ContextVar[dict[str, Any] | None] = ContextVar("kartrix_audit_scope", default=None)
 _notes: ContextVar[dict[str, Any] | None] = ContextVar("kartrix_audit_notes", default=None)

@@ -6,8 +6,9 @@ import io
 
 from rich.console import Console
 
-from kartrix.security.approval_prompt import ConsoleApprover, visible
+from kartrix.security.approval_prompt import ConsoleApprover
 from kartrix.security.approvals import ApprovalDecision, ApprovalRequest
+from kartrix.security.injection import visible
 
 
 def request(command: str = "npm install express", allow_session: bool = True, **kw: object) -> ApprovalRequest:
@@ -89,3 +90,12 @@ def test_visible() -> None:
     assert visible("ls -la") == "ls -la"
     assert visible("a\tb\x00c\u200bd\ufeff") == "a\\x09b\\x00c\\u200bd\\ufeff"
     assert visible("naïve café") == "naïve café"  # ordinary non-ASCII stays readable
+
+
+async def test_mcp_requests_cannot_be_edited_or_session_allowed() -> None:
+    a, prompts, out = approver("e", "y")  # "e" is not an option here: asked again
+    req = request('github: create_issue {"title": "x"}', allow_session=False, directory="", editable=False)
+    assert await a([req]) == [ApprovalDecision("approve")]
+    assert prompts[0][1] == ["y", "n"]
+    text = out.getvalue()
+    assert "[e] edit" not in text and "$ github" not in text and "in ." not in text

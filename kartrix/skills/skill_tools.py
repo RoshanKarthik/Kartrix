@@ -44,7 +44,7 @@ def get_registry() -> SkillRegistry:
     global _registry
     if _registry is None:
         skills_dir = Path.cwd() / settings.skills.skills_dir
-        _registry = SkillRegistry(skills_dir)
+        _registry = SkillRegistry(skills_dir, Path.cwd())
         _registry.load()
         logger.info(f"SkillRegistry initialized from: {skills_dir}")
     return _registry

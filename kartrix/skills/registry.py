@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from kartrix.observability.logger import get_logger
+from kartrix.security.injection import Finding, scan, strip_hidden, visible
+from kartrix.skills import trust
 
 logger = get_logger(__name__)
 
@@ -11,170 +15,145 @@ logger = get_logger(__name__)
 # Folders inside skills_dir that lack this file are skipped entirely.
 SKILL_FILENAME = "SKILL.md"
 
+_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_META_CHARS = 200  # description / when_to_use reach the system prompt: keep them short
+
+Status = Literal["trusted", "untrusted", "changed"]
+
 
 class SkillNotFoundError(Exception):
     pass
 
 
+@dataclass
+class Skill:
+    name: str
+    description: str
+    when_to_use: str
+    body: str
+    skill_dir: Path
+    digest: str
+    findings: list[Finding] = field(default_factory=list)  # injection heuristics on the whole skill
+
+
 class SkillRegistry:
     """
-    Owns the in-memory catalog of all skills found in skills_dir.
+    Catalog of the skills found in skills_dir (normally ``<workspace>/.kartrix/skills``).
 
     Expected layout on disk:
         skills_dir/
             python_debug/
                 SKILL.md          ← required — frontmatter + instructions
-                scripts/          ← optional — executable helpers
+                scripts/          ← optional — helpers
                 templates/        ← optional — output templates
                 resources/        ← optional — reference docs
-            write_tests/
-                SKILL.md
-                templates/
-                    pytest_template.py
 
-
-    After calling load(), the internal _skills dict looks like:
-        {
-            "python_debug": {
-                "meta":      {"name": "python_debug", "description": "...", ...},
-                "body":      "You are an expert Python debugger. Follow these steps...",
-                "skill_dir": Path(".kartrix/skills/python_debug")
-            },
-            "write_tests": {
-                "meta":      {"name": "write_tests", "description": "...", ...},
-                "body":      "Generate pytest unit tests...",
-                "skill_dir": Path(".kartrix/skills/write_tests")
-            }
-        }
-
-    "meta" is parsed from the YAML frontmatter block (name, description, when_to_use, ...).
-    "body" is everything after the frontmatter — the actual instructions sent to the LLM.
-    "skill_dir" is kept so we can later discover support files inside that folder.
+    Skills come from the repo, so they are untrusted input (B5):
+      - a skill is offered to the agent only after the user trusted it (``/skills trust``);
+        the trust is pinned to a hash of all its files (``kartrix.skills.trust``), so any change
+        needs a new approval;
+      - names must be simple identifiers; description/when_to_use are cleaned and capped, since
+        they go into the system prompt;
+      - symlinked skill folders and SKILL.md files are skipped (they could point outside the repo).
     """
 
-    def __init__(self, skills_dir: Path) -> None:
+    def __init__(self, skills_dir: Path, workspace_root: Path | None = None) -> None:
         self._skills_dir = skills_dir
-        self._skills: dict[str, dict] = {}  # populated by load()
+        self._root = workspace_root or skills_dir.parent.parent
+        self._skills: dict[str, Skill] = {}
 
     # ------------------------------------------------------------------
-    # Startup: scan disk and populate _skills
+    # Startup: scan disk
     # ------------------------------------------------------------------
 
     def load(self) -> None:
-        """
-        Walk skills_dir and parse every SKILL.md found.
-        Called once at agent startup via get_registry() in skill_tools.py.
-        Safe to call again to hot-reload if skills change on disk.
-        """
+        """Walk skills_dir and parse every SKILL.md found. Safe to call again to reload."""
         self._skills.clear()
-        if not self._skills_dir.exists():
-            logger.warning(f"skills_dir not found: {self._skills_dir}. No skills loaded.")
+        if not self._skills_dir.is_dir():
+            logger.info(f"No skills folder at {self._skills_dir}")
             return
 
-        for skill_dir in self._skills_dir.iterdir():
-            if not skill_dir.is_dir():
-                continue  # skip stray files at the top level of skills_dir
-
+        for skill_dir in sorted(self._skills_dir.iterdir()):
+            if skill_dir.is_symlink() or not skill_dir.is_dir():
+                continue
             skill_file = skill_dir / SKILL_FILENAME
-            if not skill_file.exists():
+            if skill_file.is_symlink() or not skill_file.is_file():
                 logger.warning(f"Skipping {skill_dir.name}: no SKILL.md found")
                 continue
-
             try:
-                meta, body = _parse_skill_file(skill_file)
-                # Use "name" from frontmatter if declared; fall back to the folder name.
-                # This means the folder name and the frontmatter name should match,
-                # but the frontmatter value is what the agent will refer to.
-                name = meta.get("name", skill_dir.name)
-                self._skills[name] = {
-                    "meta": meta,  # dict of frontmatter fields
-                    "body": body,  # raw instruction text (sent to LLM on activation)
-                    "skill_dir": skill_dir,  # kept for support file discovery
-                }
-                logger.info(f"Loaded skill: {name}")
+                skill = _read_skill(skill_dir, skill_file)
             except Exception as e:
                 logger.error(f"Failed to load skill from {skill_dir.name}: {e}")
+                continue
+            if skill is None:
+                continue
+            self._skills[skill.name] = skill
+            logger.info(f"Found skill: {skill.name} ({self.status(skill.name)})")
 
     # ------------------------------------------------------------------
-    # Called at agent build time → injected into SYSTEM_PROMPT
+    # Trust
+    # ------------------------------------------------------------------
+
+    def status(self, name: str) -> Status:
+        skill = self._get(name)
+        trusted = trust.trusted_digests(self._root).get(name)
+        if trusted is None:
+            return "untrusted"
+        return "trusted" if trusted == skill.digest else "changed"
+
+    def trust(self, name: str) -> Skill:
+        skill = self._get(name)
+        skill.digest = trust.skill_digest(skill.skill_dir)  # what the user approves is what's on disk now
+        trust.trust(self._root, name, skill.digest)
+        return skill
+
+    def untrust(self, name: str) -> None:
+        self._get(name)
+        trust.untrust(self._root, name)
+
+    def skills(self) -> list[Skill]:
+        return list(self._skills.values())
+
+    # ------------------------------------------------------------------
+    # Called at agent build time → appended to the system prompt
     # ------------------------------------------------------------------
 
     def build_skills_prompt(self) -> str:
-        """
-        Returns a compact string appended to the agent's SYSTEM_PROMPT at startup.
-
-
-        ONLY includes metadata (name, description, when_to_use) — NOT the full
-        skill body. This keeps the system prompt small. The agent loads full
-        instructions on demand by calling the load_skill tool (progressive disclosure).
-
-
-        Example output injected into SYSTEM_PROMPT:
-            === Available Skills ===
-            - python_debug: Debug Python errors and tracebacks | when_to_use: error, traceback, exception
-            - write_tests: Generate pytest unit tests | when_to_use: test, coverage, pytest
-
-
-            When the user's request matches a skill, call load_skill(name) ...
-        """
-        if not self._skills:
+        """Metadata of the *trusted* skills only (name, description, when_to_use); the agent loads
+        the full instructions on demand with load_skill (progressive disclosure)."""
+        trusted = [s for s in self._skills.values() if self.status(s.name) == "trusted"]
+        if not trusted:
             return ""
-
-        lines = ["=== Available Skills ==="]
-        for name, skill in self._skills.items():
-            meta = skill["meta"]
-            description = meta.get("description", "No description provided.")
-            when_to_use = meta.get("when_to_use", "")
-            line = f"- {name}: {description}"
-            if when_to_use:
-                line += f" | when_to_use: {when_to_use}"
+        lines = ["=== Available Skills (approved by the user) ==="]
+        for skill in trusted:
+            line = f"- {skill.name}: {skill.description}"
+            if skill.when_to_use:
+                line += f" | when_to_use: {skill.when_to_use}"
             lines.append(line)
-
-        # This sentence is the agent's instruction on how to act when it recognises a skill.
         lines.append(
-            "\nWhen the user's request matches a skill, call load_skill(name) "
-            "to get the full instructions before proceeding."
+            "\nWhen the user's request matches a skill, call load_skill(name) to get the full instructions before proceeding."
         )
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
-    # Called at query time → triggered by the agent via the load_skill tool
+    # Called at query time by the load_skill tool
     # ------------------------------------------------------------------
 
     def load_skill(self, name: str) -> str:
-        """
-        Returns the full SKILL.md body for the named skill, plus a listing of
-        any support files inside the skill's folder.
-
-        The agent calls this (via the load_skill @tool in skill_tools.py) after
-        spotting a matching skill in the system prompt. The returned text becomes
-        part of the agent's reasoning context for that query.
-
-        Support files are listed but NOT read here — the agent decides which ones
-        it needs and calls read_file() on them individually (tier-3 disclosure).
-
-        Example return value:
-            You are an expert Python debugger. Follow these steps...
-            1. Ask for the full traceback if not provided.
-            ...
-
-            --- Support Files Available ---
-              /path/to/skills/python_debug/scripts/run_debugger.py
-              /path/to/skills/python_debug/resources/common_errors.md
-            You can read any of these files using the read_file tool ...
-        """
-        if name not in self._skills:
-            available = ", ".join(self._skills.keys()) or "none"
-            raise SkillNotFoundError(f"Skill '{name}' not found. Available skills: {available}")
-
-        skill = self._skills[name]
-        body = skill["body"]
-        skill_dir: Path = skill["skill_dir"]
-
-        # Discover support files and append their paths to the response.
-        # The agent can then call read_file() on whichever ones are relevant.
-        support_files = _list_support_files(skill_dir)
-        result = body
+        """The skill's instructions plus its support files (workspace-relative, for read_file).
+        Refused unless the skill is trusted and unchanged since — checked again on every load."""
+        skill = self._get(name)
+        current = trust.skill_digest(skill.skill_dir)
+        trusted = trust.trusted_digests(self._root).get(name)
+        if trusted is None:
+            return f"Skill '{name}' is not approved. Ask the user to review it and run /skills trust {name}."
+        if trusted != current:
+            return (
+                f"Skill '{name}' changed since the user approved it, so it is not loaded. "
+                f"Ask the user to review the changes and run /skills trust {name} again."
+            )
+        result = skill.body
+        support_files = _list_support_files(skill.skill_dir, self._root)
         if support_files:
             result += "\n\n--- Support Files Available ---\n"
             result += "\n".join(f"  {p}" for p in support_files)
@@ -187,10 +166,40 @@ class SkillRegistry:
     def skill_names(self) -> list[str]:
         return list(self._skills.keys())
 
+    def _get(self, name: str) -> Skill:
+        if name not in self._skills:
+            available = ", ".join(self._skills.keys()) or "none"
+            raise SkillNotFoundError(f"Skill '{name}' not found. Available skills: {available}")
+        return self._skills[name]
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers (private to this file)
 # ---------------------------------------------------------------------------
+
+
+def _clean_meta(value: object) -> str:
+    text, _ = strip_hidden(str(value or ""))
+    return visible(" ".join(text.split()))[:_META_CHARS]
+
+
+def _read_skill(skill_dir: Path, skill_file: Path) -> Skill | None:
+    meta, body = _parse_skill_file(skill_file)
+    name = str(meta.get("name") or skill_dir.name)
+    if not _NAME.match(name):
+        logger.warning(f"Skipping skill in {skill_dir.name}: invalid name {visible(name)[:80]!r}")
+        return None
+    description = _clean_meta(meta.get("description") or "No description provided.")
+    when_to_use = _clean_meta(meta.get("when_to_use"))
+    return Skill(
+        name=name,
+        description=description,
+        when_to_use=when_to_use,
+        body=body,
+        skill_dir=skill_dir,
+        digest=trust.skill_digest(skill_dir),
+        findings=scan(f"{description}\n{when_to_use}\n{body}"),
+    )
 
 
 def _parse_skill_file(path: Path) -> tuple[dict, str]:
@@ -204,66 +213,32 @@ def _parse_skill_file(path: Path) -> tuple[dict, str]:
         ---
         You are an expert Python debugger...   ← this is the body
 
-    The regex matches the opening ---, captures everything up to the closing ---,
-    then captures the rest of the file as the body.
-    If there is no frontmatter, the entire file is treated as the body and
-    meta is returned as an empty dict (the folder name becomes the skill name).
+    Without frontmatter the whole file is the body and the folder name becomes the skill name.
     """
     text = path.read_text(encoding="utf-8")
 
     match = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)", text, re.DOTALL)
     if not match:
-        # No frontmatter block found — body is the whole file.
         return {}, text.strip()
 
-    frontmatter_str = match.group(1)  # raw YAML text between the --- markers
-    body = match.group(2).strip()  # everything after the closing ---
-    meta = _parse_yaml(frontmatter_str)
-    return meta, body
+    meta = _parse_yaml(match.group(1))
+    return (meta if isinstance(meta, dict) else {}), match.group(2).strip()
 
 
 def _parse_yaml(text: str) -> dict:
-    """
-    Parse the frontmatter YAML string into a dict.
+    import yaml  # already a dependency (config.py)
+
+    return yaml.safe_load(text) or {}
 
 
-    Strategy:
-      1. Try yaml.safe_load (pyyaml is already a dependency via config.py).
-      2. If yaml isn't importable for any reason, fall back to a line-by-line
-         parser that handles flat "key: value" pairs only (no nesting or lists).
-         This is enough for the required frontmatter fields.
-    """
-    try:
-        import yaml  # already present — loaded by config.py at startup
-
-        return yaml.safe_load(text) or {}
-    except ImportError:
-        pass
-
-    # Minimal fallback for flat key: value frontmatter
-    result = {}
-    for line in text.splitlines():
-        if ":" in line:
-            key, _, value = line.partition(":")
-            result[key.strip()] = value.strip()
-    return result
-
-
-def _list_support_files(skill_dir: Path) -> list[str]:
-    """
-    Return the absolute paths of every file inside the skill folder except SKILL.md.
-
-    rglob("*") descends into all subdirectories (scripts/, templates/, resources/, ...),
-    so the agent gets a complete picture of what resources the skill package ships with.
-
-    Example for python_debug/:
-        [
-            "/path/to/skills/python_debug/scripts/run_debugger.py",
-            "/path/to/skills/python_debug/resources/common_errors.md"
-        ]
-    """
+def _list_support_files(skill_dir: Path, workspace_root: Path) -> list[str]:
+    """Every regular file in the skill folder except SKILL.md, relative to the workspace root
+    (the form read_file expects). Links are skipped."""
     files = []
-    for f in skill_dir.rglob("*"):
-        if f.is_file() and f.name != SKILL_FILENAME:
-            files.append(str(f))
+    for f in sorted(skill_dir.rglob("*")):
+        if f.is_file() and not f.is_symlink() and f.name != SKILL_FILENAME:
+            try:
+                files.append(f.relative_to(workspace_root).as_posix())
+            except ValueError:
+                files.append(f.as_posix())
     return files

@@ -30,6 +30,7 @@ dependencies = [
     "langchain-nvidia-ai-endpoints>=1.0,<2.0",
     "pathspec>=0.12,<1.0",
     "pgvector>=0.4,<1.0",
+    "platformdirs>=4.12.3",
 ]
 
 [project.scripts]

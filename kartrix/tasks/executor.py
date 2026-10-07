@@ -18,6 +18,7 @@ from kartrix.security.approvals import (
     stream_agent,
 )
 from kartrix.security.audit import AuditMiddleware
+from kartrix.security.injection import SECURITY_RULES, ContentGuardMiddleware
 from kartrix.tools.filesystem_tools import READ_TOOLS, WRITE_TOOLS, edit_file, write_file
 from kartrix.tools.terminal_tools import run_command
 
@@ -80,7 +81,9 @@ ACCEPTANCE CRITERIA (your output must satisfy ALL of these):
 {criteria_lines or "  (none specified)"}{prior_context}
 
 When done, summarise what you implemented in 3-5 bullet points.
-Do NOT leave any implementation incomplete."""
+Do NOT leave any implementation incomplete.
+
+{SECURITY_RULES}"""
 
 
 # ------------------------------------------------------------------
@@ -159,9 +162,9 @@ async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None, a
 
     logger.info(f"Building agent for task {task['id']} (type={task['task_type']}, tools={[t.name for t in tools]})")
 
-    middleware = [*get_model_middleware(temperature=0, max_tokens=3000), AuditMiddleware()]
+    middleware = [*get_model_middleware(temperature=0, max_tokens=3000), AuditMiddleware(), ContentGuardMiddleware()]
     if approver is not None:
-        middleware.insert(-1, ApprovalMiddleware())
+        middleware.insert(-2, ApprovalMiddleware())  # outside audit, like the chat agent
     # Interrupts need a checkpointer; a task's run is not resumed across restarts (recovery
     # re-runs crashed tasks), so memory is enough. The thread id is not a UUID on purpose:
     # audit rows then take the session id from the orchestrator's audit scope.

@@ -34,6 +34,7 @@ MODES: tuple[str, ...] = get_args(Mode)
 
 _mode: Mode | None = None
 _user_approved: ContextVar[bool] = ContextVar("kartrix_user_approved", default=False)
+_mode_cap: ContextVar[Mode | None] = ContextVar("kartrix_mode_cap", default=None)
 _session_allowed: set[tuple[str, str]] = set()  # (command line, directory) the user allowed for this session
 
 
@@ -41,8 +42,25 @@ class PermissionDeniedError(Exception):
     """The current permission mode forbids the action. Safe to show to the model."""
 
 
-def get_mode() -> Mode:
+def get_configured_mode() -> Mode:
+    """The mode the user chose (``/mode`` or config), ignoring any temporary cap."""
     return _mode if _mode is not None else settings.permissions.mode
+
+
+def get_mode() -> Mode:
+    """The mode in effect: the configured one, lowered by :func:`cap_mode` if active."""
+    mode, cap = get_configured_mode(), _mode_cap.get()
+    return cap if cap is not None and MODES.index(cap) < MODES.index(mode) else mode
+
+
+@contextmanager
+def cap_mode(cap: Mode) -> Iterator[None]:
+    """Run with at most ``cap`` permissions (e.g. auto → default after external content was read)."""
+    token = _mode_cap.set(cap)
+    try:
+        yield
+    finally:
+        _mode_cap.reset(token)
 
 
 def set_mode(mode: str) -> Mode:
@@ -90,6 +108,10 @@ def clear_session_allowances() -> None:
 def needs_approval(decision: Decision) -> bool:
     """An "ask" decision the user hasn't already allowed for this session."""
     return decision.action == "ask" and approval_key(decision) not in _session_allowed
+
+
+def is_user_approved() -> bool:
+    return _user_approved.get()
 
 
 def request_approval(decision: Decision) -> bool:

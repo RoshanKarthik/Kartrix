@@ -20,6 +20,7 @@ call may no longer need approval (e.g. the user just allowed that command for th
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import asdict, dataclass, field
@@ -35,9 +36,10 @@ from sqlalchemy import update
 from kartrix.db.engine import session_scope
 from kartrix.db.models import Approval, ApprovalKind, ApprovalStatus
 from kartrix.observability.logger import get_logger
-from kartrix.security import audit, permissions
+from kartrix.security import audit, external_tools, permissions
 from kartrix.security.command_policy import Decision, evaluate
 from kartrix.security.command_rules import Category
+from kartrix.security.injection import external_content_cap
 from kartrix.security.secrets import redact
 
 logger = get_logger(__name__)
@@ -65,6 +67,7 @@ class ApprovalRequest:
     allow_session: bool  # may the user allow this command for the rest of the session?
     alongside: list[str] = field(default_factory=list)  # other tool calls of the same turn
     task_key: str | None = None
+    editable: bool = True  # commands can be edited; MCP tool calls can't
 
 
 @dataclass(frozen=True)
@@ -91,8 +94,15 @@ def _describe(call: ToolCall) -> str:
     return f"{call['name']} {target[:200]}".strip()
 
 
+def _mode_label() -> str:
+    mode = permissions.get_mode()
+    if mode != permissions.get_configured_mode():
+        return f"{mode} (auto paused: external content was read in this request)"
+    return mode
+
+
 def _decline_message(call: ToolCall, reason: str | None) -> ToolMessage:
-    text = "Error: the user declined this command"
+    text = f"Error: the user declined this {'command' if call['name'] == 'run_command' else 'tool call'}"
     text += f": {reason}" if reason else "."
     text += " It was not run. Don't run it again unless the user asks; continue without it or ask them how to proceed."
     return ToolMessage(content=text, name=call["name"], tool_call_id=call["id"] or "", status="error")
@@ -103,9 +113,31 @@ class ApprovalMiddleware(AgentMiddleware):
 
     state_schema = _ApprovalState
 
-    def _request(self, call: ToolCall, others: list[ToolCall]) -> tuple[ApprovalRequest, Decision] | None:
-        if call["name"] != "run_command" or not call.get("id"):
+    def _external_request(self, call: ToolCall, others: list[ToolCall]) -> ApprovalRequest | None:
+        ext = external_tools.get(call["name"])
+        if ext is None or not ext.needs_approval or permissions.get_mode() == "read_only":
+            return None  # read-only mode: the content guard refuses the call without asking
+        args = json.dumps(call.get("args") or {}, ensure_ascii=False, sort_keys=True)
+        return ApprovalRequest(
+            tool_call_id=str(call["id"]),
+            tool=call["name"],
+            command=f"{ext.server}: {call['name']} {args}",
+            directory="",
+            category="external",
+            reason=ext.reason,
+            mode=permissions.get_mode(),
+            allow_session=False,
+            alongside=[_describe(o) for o in others if o is not call],
+            task_key=audit.scope_ids().get("task_key"),
+            editable=False,
+        )
+
+    def _request(self, call: ToolCall, others: list[ToolCall]) -> tuple[ApprovalRequest, Decision | None] | None:
+        if not call.get("id"):
             return None
+        if call["name"] != "run_command":
+            external = self._external_request(call, others)
+            return (external, None) if external else None
         args = call.get("args") or {}
         command, directory = args.get("command"), args.get("directory", ".")
         if not isinstance(command, str) or not isinstance(directory, str):
@@ -124,7 +156,7 @@ class ApprovalMiddleware(AgentMiddleware):
             directory=directory,
             category=str(decision.category),
             reason=decision.reason,
-            mode=permissions.get_mode(),
+            mode=_mode_label(),
             allow_session=decision.category not in _NO_SESSION_ALLOW,
             alongside=[_describe(o) for o in others if o is not call],
             task_key=audit.scope_ids().get("task_key"),
@@ -132,9 +164,12 @@ class ApprovalMiddleware(AgentMiddleware):
         return request, decision
 
     def after_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
-        last = state["messages"][-1] if state["messages"] else None
+        messages = state["messages"]
+        last = messages[-1] if messages else None
         calls = list(last.tool_calls) if isinstance(last, AIMessage) else []
-        pending = [r for c in calls if (r := self._request(c, calls)) is not None]
+        # Evaluate as the tools will run: auto is capped to default after external content.
+        with external_content_cap(messages):
+            pending = [r for c in calls if (r := self._request(c, calls)) is not None]
         if not pending:
             return {_STATE_KEY: {}} if state.get(_STATE_KEY) else None
 
@@ -148,11 +183,13 @@ class ApprovalMiddleware(AgentMiddleware):
             call = next(c for c in calls if c["id"] == request.tool_call_id)
             raw = decisions.get(request.tool_call_id)
             kind = raw.get("type") if isinstance(raw, dict) else None
-            if kind == "approve" or (kind == "approve_session" and request.allow_session):
-                if kind == "approve_session":
+            if kind == "approve" or (kind == "approve_session" and request.allow_session and decision):
+                if kind == "approve_session" and decision is not None:
                     permissions.allow_for_session(decision)
                 approved[request.tool_call_id] = None
-            elif kind == "edit" and isinstance(raw, dict) and str(raw.get("command") or "").strip():
+            elif (
+                kind == "edit" and request.editable and isinstance(raw, dict) and str(raw.get("command") or "").strip()
+            ):
                 approved[request.tool_call_id] = str(raw["command"]).strip()
             elif kind == "reject":
                 declined.append(_decline_message(call, raw.get("message") if isinstance(raw, dict) else None))

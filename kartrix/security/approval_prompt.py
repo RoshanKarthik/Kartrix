@@ -8,7 +8,6 @@ rewrite text on screen), invisible and bidi-override characters are printed as v
 from __future__ import annotations
 
 import asyncio
-import re
 import sys
 from collections.abc import Callable
 
@@ -18,20 +17,9 @@ from rich.prompt import Prompt
 from rich.text import Text
 
 from kartrix.security.approvals import ApprovalDecision, ApprovalRequest
-
-_HIDDEN = re.compile(r"[\x00-\x1f\x7f-\x9f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")
+from kartrix.security.injection import visible
 
 AskFn = Callable[[str, list[str] | None, str], str]
-
-
-def visible(text: str) -> str:
-    """Make control/invisible characters visible so the user sees what really runs."""
-
-    def esc(m: re.Match[str]) -> str:
-        code = ord(m.group())
-        return f"\\x{code:02x}" if code <= 0xFF else f"\\u{code:04x}"
-
-    return _HIDDEN.sub(esc, text)
 
 
 def _rich_ask(console: Console) -> AskFn:
@@ -67,12 +55,13 @@ class ConsoleApprover:
 
     def _show(self, request: ApprovalRequest, index: int, total: int) -> None:
         body = Text()
-        body.append("$ ", style="dim")
+        body.append("$ " if request.editable else "", style="dim")
         body.append(visible(request.command), style="bold")
-        where = f"in {visible(request.directory)}"
+        where = [f"in {visible(request.directory)}"] if request.directory else []
         if request.task_key:
-            where += f" · task {visible(request.task_key)}"
-        body.append(f"\n{where} · mode {request.mode}", style="dim")
+            where.append(f"task {visible(request.task_key)}")
+        where.append(f"mode {request.mode}")
+        body.append("\n" + " · ".join(where), style="dim")
         body.append(f"\n{visible(request.reason)}")
         if request.alongside:
             body.append("\nAlso in this step: " + ", ".join(visible(a) for a in request.alongside), style="dim")
@@ -82,9 +71,10 @@ class ConsoleApprover:
 
     async def _decide(self, request: ApprovalRequest, index: int, total: int) -> ApprovalDecision:
         self._show(request, index, total)
-        options = ["y", "a", "e", "n"] if request.allow_session else ["y", "e", "n"]
+        options = ["y", *(["a"] if request.allow_session else []), *(["e"] if request.editable else []), "n"]
         session = "[a] this exact command for the session · " if request.allow_session else ""
-        self.console.print(Text(f"[y] yes, once · {session}[e] edit · [n] no", style="dim"))
+        edit = "[e] edit · " if request.editable else ""
+        self.console.print(Text(f"[y] yes, once · {session}{edit}[n] no", style="dim"))
         while True:
             choice = await asyncio.to_thread(self._ask, "Run it?", options, "n")
             if choice == "y":
@@ -94,7 +84,7 @@ class ConsoleApprover:
             if choice == "n":
                 reason = (await asyncio.to_thread(self._ask, "Reason for the agent (optional)", None, "")).strip()
                 return ApprovalDecision("reject", message=reason or None)
-            if choice == "e":
+            if choice == "e" and request.editable:
                 edited = (await asyncio.to_thread(self._ask, "Command to run instead (empty = back)", None, "")).strip()
                 if edited:
                     return ApprovalDecision("edit", command=edited)
