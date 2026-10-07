@@ -44,7 +44,7 @@ from kartrix.security.command_policy import rule_matches
 
 logger = get_logger(__name__)
 
-WRITE_TOOLS = frozenset({"write_file", "edit_file", "append_file"})
+WRITE_TOOLS = frozenset({"write_file", "edit_file", "append_file", "delete_file"})
 _EXIT_STATUS = {0: "completed", 1: "failed", 2: "stopped", 3: "not_started"}
 
 
@@ -80,12 +80,20 @@ def eval_env(home: Path) -> dict[str, str]:
     return env
 
 
+# Where Node can't be sandboxed (Windows AppContainer), its commands need approval: the eval approves
+# running the tests as the user would. Each one still counts as an approval (a human interruption).
+NODE_TEST_COMMANDS = ["node --test", "node --test *", "npm test", "npm test *", "npm run test", "npm run test *"]
+
+
 def write_spec(task: AgentTask, spec_path: Path, report: Path, events: Path) -> None:
+    approvals = task.approvals.model_dump()
+    if task.stack == "typescript":
+        approvals["allow"] = [*approvals["allow"], *(c for c in NODE_TEST_COMMANDS if c not in approvals["allow"])]
     spec: dict[str, Any] = {
         "task": task.task,
         "mode": task.mode,
         "permissions": task.permissions,
-        "approvals": task.approvals.model_dump(),
+        "approvals": approvals,
         "report": str(report),
         "events": str(events),
     }
@@ -119,15 +127,15 @@ def _placeholders(arg: str) -> str:
 
 
 def run_check(step: CheckStep, workspace: Path) -> dict[str, Any]:
-    """One check command, in the sandbox (network off) when there is one."""
+    """One check command, in the sandbox (network off) when there is one that can run it."""
     from kartrix.sandbox.base import SandboxRun
-    from kartrix.sandbox.manager import get_sandbox
+    from kartrix.sandbox.manager import sandbox_for
     from kartrix.security.environment import scrubbed_env
     from kartrix.tools.process_runner import Launch, run_launch
 
     argv = [_placeholders(a) for a in step.run]
     env = {**scrubbed_env(), "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
-    backend = get_sandbox()
+    backend = sandbox_for(argv, Path(argv[0]))
     sandboxed = backend is not None
     start = time.perf_counter()
     try:

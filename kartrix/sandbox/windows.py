@@ -8,11 +8,25 @@ An AppContainer process runs with its own SID and can open only what an ACL gran
   touch another project.
 - Its SID is granted Modify on the workspace and on the state folder, and Read & execute on the
   toolchain the command uses (its folder, a venv's base interpreter, ``sandbox.extra_read``).
+  The folders above the workspace and the toolchain get "list / read attributes" on that folder
+  only (nothing below it inherits it): tools stat their parents (pytest looks for ``conftest.py``
+  above the project, uv's launcher resolves its own path), and without it they fail with "access
+  denied". Contents stay unreadable; folders the user may not change (a drive root) are skipped.
   Protected workspace paths stop inheriting the workspace grant (deny entries for an AppContainer
   SID aren't honoured, so the grant has to be absent): ``deny_read`` paths are then out of reach,
   ``deny_write`` paths get Read & execute back. Refreshed before every run, so new ``.env`` files
   are covered.
   Every grant is recorded in the user data folder; ``kartrix sandbox reset`` removes them all.
+- Two Python details that break inside an AppContainer are worked around for sandboxed runs only:
+  a venv's console-script launchers (``pytest.exe`` made by uv or pip) fail to resolve their own
+  path, so they run as ``python.exe <launcher>`` (the launcher is a zip app); and Python 3.12.4+
+  turns ``mkdir(mode=0o700)`` (``tempfile.mkdtemp``, pytest's cache and ``tmp_path``) into an
+  owner-only ACL the container's SID can't open, so a ``sitecustomize`` shim on ``PYTHONPATH``
+  creates those folders with the inherited ACL instead (any existing ``sitecustomize`` still runs).
+- Node.js can't start child processes in an AppContainer (libuv's named pipes are refused and it
+  retries forever; inherited handles fail with ENOENT), so ``node --test``, ``npm test``, install
+  scripts and dev servers would hang. Node toolchain commands therefore run unsandboxed under the
+  normal approval rules (``cannot_run``), and the approval prompt and audit log say so.
 - Network: off, or — for an approved install or network command — ``internetClient`` (any host:
   without admin rights the network can't be limited to the registries on Windows).
 - The process starts suspended, joins a job object with memory and process limits (see
@@ -21,12 +35,17 @@ An AppContainer process runs with its own SID and can open only what an ACL gran
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import json
 import os
+import random
 import subprocess
 import sys
 import threading
+import time
+import zipfile
+from collections.abc import Iterator
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any
@@ -47,6 +66,8 @@ _ALREADY_EXISTS = -2147024713  # HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) as a s
 # Access masks
 _READ_EXECUTE = 0x1200A9  # FILE_GENERIC_READ | FILE_GENERIC_EXECUTE
 _MODIFY = 0x1301BF  # read, write, execute, delete
+_TRAVERSE = 0x1000A1  # FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+_SE_DACL_AUTO_INHERITED, _SE_DACL_PROTECTED = 0x0400, 0x1000
 _GRANT, _REVOKE = 1, 4  # ACCESS_MODE
 _INHERIT = 3  # SUB_CONTAINERS_AND_OBJECTS_INHERIT
 _SE_FILE_OBJECT = 1
@@ -175,25 +196,37 @@ def container_name(root: Path) -> str:
     return f"kartrix.{policy.workspace_key(root)}"
 
 
-def ensure_profile(name: str) -> Sid:
-    """Create the AppContainer profile (or find the existing one) and return its SID."""
-    sid = ctypes.c_void_p()
-    hr = _userenv.CreateAppContainerProfile(
-        ctypes.c_wchar_p(name),
-        ctypes.c_wchar_p("Kartrix sandbox"),
-        ctypes.c_wchar_p("Commands Kartrix runs for one workspace"),
-        None,
-        wintypes.DWORD(0),
-        ctypes.byref(sid),
-    )
-    if ctypes.c_int32(hr).value == _ALREADY_EXISTS:
-        _check_hr(
-            _userenv.DeriveAppContainerSidFromAppContainerName(ctypes.c_wchar_p(name), ctypes.byref(sid)),
-            "DeriveAppContainerSid",
-        )
-    else:
-        _check_hr(hr, "CreateAppContainerProfile")
-    return Sid(sid, "free")
+def ensure_profile(name: str, attempts: int = 6) -> Sid:
+    """Create the AppContainer profile (or find the existing one) and return its SID.
+
+    Two Kartrix processes creating the same profile at the same moment (two terminals, parallel
+    eval jobs) make one call fail with E_UNEXPECTED; it is retried, and once the other process has
+    created the profile the existing one is used."""
+    for attempt in range(attempts):
+        sid = ctypes.c_void_p()
+        hr = ctypes.c_int32(
+            _userenv.CreateAppContainerProfile(
+                ctypes.c_wchar_p(name),
+                ctypes.c_wchar_p("Kartrix sandbox"),
+                ctypes.c_wchar_p("Commands Kartrix runs for one workspace"),
+                None,
+                wintypes.DWORD(0),
+                ctypes.byref(sid),
+            )
+        ).value
+        if hr >= 0:
+            return Sid(sid, "free")
+        if hr == _ALREADY_EXISTS:
+            _check_hr(
+                _userenv.DeriveAppContainerSidFromAppContainerName(ctypes.c_wchar_p(name), ctypes.byref(sid)),
+                "DeriveAppContainerSid",
+            )
+            return Sid(sid, "free")
+        if attempt + 1 < attempts:
+            logger.info("AppContainer profile creation failed; retrying", extra={"hresult": hex(hr & 0xFFFFFFFF)})
+            time.sleep(0.1 * (attempt + 1) + random.random() * 0.1)  # noqa: S311 — jitter, not security
+    _check_hr(hr, "CreateAppContainerProfile")
+    raise AssertionError("unreachable")  # _check_hr raised
 
 
 def delete_profile(name: str) -> None:
@@ -231,14 +264,99 @@ def set_access(path: Path, sid: Sid, mask: int, mode: int, inherit: bool = True)
         _k32.LocalFree(sd)
 
 
+def set_access_here(path: Path, sid: Sid, mask: int, mode: int) -> None:
+    """Add (or remove) a non-inheritable ACE on ``path`` alone. ``SetFileSecurityW`` writes this one
+    security descriptor; ``SetNamedSecurityInfoW`` would walk everything below the folder (slow for a
+    home directory, and needless: nothing changes there)."""
+    old = ctypes.c_void_p()
+    sd = ctypes.c_void_p()
+    err = _advapi.GetNamedSecurityInfoW(
+        ctypes.c_wchar_p(str(path)), _SE_FILE_OBJECT, _DACL, None, None, ctypes.byref(old), None, ctypes.byref(sd)
+    )
+    if err:
+        raise ctypes.WinError(err)
+    try:
+        control, revision = wintypes.WORD(), wintypes.DWORD()
+        if not _advapi.GetSecurityDescriptorControl(sd, ctypes.byref(control), ctypes.byref(revision)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        ea = _ExplicitAccess(mask, mode, 0, _Trustee(None, 0, 0, 0, sid.ptr))
+        new = ctypes.c_void_p()
+        err = _advapi.SetEntriesInAclW(1, ctypes.byref(ea), old, ctypes.byref(new))
+        if err:
+            raise ctypes.WinError(err)
+        try:
+            absolute = ctypes.create_string_buffer(64)  # SECURITY_DESCRIPTOR (40 bytes on x64)
+            flags = _SE_DACL_AUTO_INHERITED | _SE_DACL_PROTECTED
+            ok = (
+                _advapi.InitializeSecurityDescriptor(absolute, 1)
+                and _advapi.SetSecurityDescriptorDacl(absolute, True, new, False)
+                and _advapi.SetSecurityDescriptorControl(absolute, flags, control.value & flags)
+                and _advapi.SetFileSecurityW(ctypes.c_wchar_p(str(path)), _DACL, absolute)
+            )
+            if not ok:
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            _k32.LocalFree(new)
+    finally:
+        _k32.LocalFree(sd)
+
+
+def parent_dirs(paths: list[Path]) -> list[Path]:
+    """The folders above ``paths`` (outside the system folders, which are readable already)."""
+    system = _system_dirs()
+    out: list[Path] = []
+    for path in paths:
+        for parent in Path(os.path.realpath(path)).parents:
+            if parent not in out and not any((os.path.normcase(str(parent)) + os.sep).startswith(s) for s in system):
+                out.append(parent)
+    return out
+
+
+_thread_lock = threading.RLock()
+
+
+@contextlib.contextmanager
+def acl_lock(timeout: float = 120.0) -> Iterator[None]:
+    """Held while a sandbox changes ACLs, across every Kartrix process of this user. Changing an ACL is a
+    read-modify-write of the whole list: two processes granting their containers access to the same
+    folder (a shared venv, a parent folder) at the same moment lost one entry, and that container could
+    no longer start Python ("No pyvenv.cfg file") while the grant store said it had access."""
+    import msvcrt
+
+    with _thread_lock:
+        path = user_data_dir() / "sandbox_grants.lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a+b") as fh:
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() > deadline:
+                        raise
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+
+
 class GrantStore:
-    """Every ACE Kartrix added, per container — so ``kartrix sandbox reset`` can remove them."""
+    """Every ACE Kartrix added, per container — so ``kartrix sandbox reset`` can remove them. Reloaded
+    from disk under :func:`acl_lock` before it is used, so processes don't overwrite each other's records."""
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_dir() / "sandbox_grants.json"
         self._lock = threading.Lock()
+        self.data: dict[str, dict[str, Any]] = {}
+        self.reload()
+
+    def reload(self) -> None:
         try:
-            self.data: dict[str, dict[str, Any]] = json.loads(self.path.read_text(encoding="utf-8"))
+            self.data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             self.data = {}
 
@@ -315,6 +433,96 @@ def toolchain_dirs(exe: Path) -> list[Path]:
         except OSError:
             continue
     return [p for p in out if p.exists() and not any((os.path.normcase(str(p)) + os.sep).startswith(s) for s in system)]
+
+
+# ── Python inside the container ───────────────────────────────────────
+
+SHIM = '''"""Written by Kartrix's Windows sandbox (kartrix/sandbox/windows.py) for sandboxed commands only.
+
+Python 3.12.4+ gives folders made with mode 0o700 (tempfile.mkdtemp, pytest's cache and tmp_path)
+an owner-only ACL, which a process in an AppContainer can't open. Inside the sandbox those folders
+get the ACL of their parent instead (the sandbox's own temp folder or the workspace).
+"""
+import importlib.machinery
+import importlib.util
+import os
+import sys
+
+if sys.platform == "win32":
+    _mkdir = os.mkdir
+
+    def _sandbox_mkdir(path, mode=0o777, *, dir_fd=None):
+        return _mkdir(path, 0o777 if mode == 0o700 else mode, dir_fd=dir_fd)
+
+    os.mkdir = _sandbox_mkdir
+
+_here = os.path.dirname(os.path.abspath(__file__))
+_spec = importlib.machinery.PathFinder.find_spec(
+    "sitecustomize", [p for p in sys.path if os.path.abspath(p or ".") != _here]
+)
+if _spec is not None and _spec.loader is not None:  # the environment's own sitecustomize, if any
+    _module = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_module)
+'''
+
+
+def python_shim(state: Path) -> Path:
+    """The folder with the ``sitecustomize`` shim (rewritten when it differs)."""
+    folder = state / "pyshim"
+    target = folder / "sitecustomize.py"
+    try:
+        current = target.read_text(encoding="utf-8")
+    except OSError:
+        current = None
+    if current != SHIM:
+        folder.mkdir(parents=True, exist_ok=True)
+        target.write_text(SHIM, encoding="utf-8")
+    return folder
+
+
+def unwrap_launcher(args: list[str]) -> list[str]:
+    """`<venv>/Scripts/tool.exe ...` → `<venv>/Scripts/python.exe <tool.exe> ...` for console-script
+    launchers (an .exe with a zip app appended, next to the venv's python.exe)."""
+    if not args:
+        return args
+    exe = Path(args[0])
+    python = exe.with_name("python.exe")
+    if exe.suffix.lower() != ".exe" or exe.name.lower() in ("python.exe", "pythonw.exe") or not python.is_file():
+        return args
+    try:
+        if not zipfile.is_zipfile(exe):
+            return args
+    except OSError:
+        return args
+    return [str(python), str(exe), *args[1:]]
+
+
+NODE_PROGRAMS = frozenset({
+    "node", "npm", "npx", "pnpm", "pnpx", "yarn", "yarnpkg", "corepack", "bun", "bunx", "deno", "tsc", "tsx",
+    "ts-node", "vite", "vitest", "jest", "mocha", "next", "nuxt", "astro", "eslint", "prettier", "playwright",
+    "webpack", "rollup", "esbuild", "turbo", "nx", "nodemon",
+})  # fmt: skip
+NODE_REASON = "Node.js can't start child processes inside an AppContainer"
+
+
+def runs_on_node(argv: list[str], exe: Path | None) -> bool:
+    """A Node.js toolchain command: a known Node program, anything from node_modules, or an npm-style
+    ``.cmd``/``.ps1`` shim that starts node."""
+    name = Path(argv[0]).name.lower() if argv else ""
+    for suffix in (".exe", ".cmd", ".bat", ".ps1"):
+        name = name.removesuffix(suffix)
+    if name in NODE_PROGRAMS:
+        return True
+    if exe is None:
+        return False
+    if "node_modules" in (part.lower() for part in exe.parts):
+        return True
+    if exe.suffix.lower() in (".cmd", ".bat", ".ps1"):
+        try:
+            return "node" in exe.read_text(encoding="utf-8", errors="replace")[:4000].lower()
+        except OSError:
+            return False
+    return False
 
 
 # ── process creation ──────────────────────────────────────────────────
@@ -422,6 +630,12 @@ def _bind_prototypes() -> None:
     _advapi.SetEntriesInAclW.restype = wintypes.DWORD
     _advapi.SetEntriesInAclW.argtypes = [wintypes.ULONG, ctypes.POINTER(_ExplicitAccess), ctypes.c_void_p,
                                          ctypes.POINTER(ctypes.c_void_p)]  # fmt: skip
+    _advapi.GetSecurityDescriptorControl.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.WORD),
+                                                     ctypes.POINTER(wintypes.DWORD)]  # fmt: skip
+    _advapi.InitializeSecurityDescriptor.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+    _advapi.SetSecurityDescriptorDacl.argtypes = [ctypes.c_void_p, wintypes.BOOL, ctypes.c_void_p, wintypes.BOOL]
+    _advapi.SetSecurityDescriptorControl.argtypes = [ctypes.c_void_p, wintypes.WORD, wintypes.WORD]
+    _advapi.SetFileSecurityW.argtypes = [ctypes.c_wchar_p, wintypes.DWORD, ctypes.c_void_p]
     _advapi.SetNamedSecurityInfoW.restype = wintypes.DWORD
     _advapi.SetNamedSecurityInfoW.argtypes = [ctypes.c_wchar_p, ctypes.c_int, wintypes.DWORD, ctypes.c_void_p,
                                               ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]  # fmt: skip
@@ -451,6 +665,7 @@ class AppContainerBackend(Backend):
         self.grants = GrantStore()
         self._sids: dict[str, Sid] = {}
         self._lock = threading.Lock()
+        self._no_traverse: set[tuple[str, Path]] = set()  # parents we may not change (tried once per process)
 
     @classmethod
     def detect(cls) -> AppContainerBackend:
@@ -468,6 +683,9 @@ class AppContainerBackend(Backend):
     def describe(self) -> str:
         return "AppContainer — writes limited to the workspace, network off; installs need approval (then: internet)"
 
+    def cannot_run(self, argv: list[str], exe: Path | None) -> str | None:
+        return NODE_REASON if runs_on_node(argv, exe) else None
+
     def _sid(self, name: str) -> Sid:
         with self._lock:
             if name not in self._sids:
@@ -478,45 +696,74 @@ class AppContainerBackend(Backend):
         if not path.exists() or self.grants.has(name, path, kind):
             return
         logger.info("Sandbox access granted", extra={"container": name, "path": str(path), "kind": kind})
-        if kind in _MASKS:
+        if kind == "traverse":
+            set_access_here(path, sid, _TRAVERSE, _GRANT)
+        elif kind in _MASKS:
             mask, mode = _MASKS[kind]
             set_access(path, sid, mask, mode)
         else:
             protect(path, sid, readable=kind == "deny_write")
         self.grants.add(name, path, kind)
 
+    def _grant_all(self, name: str, sid: Sid, ws: Workspace, state: Path, exe: Path) -> None:
+        """Every grant a command needs (called under :func:`acl_lock`)."""
+        self._grant(name, sid, ws.root, "modify")
+        self._grant(name, sid, state, "modify")
+        for p in policy.extra_paths("write"):
+            self._grant(name, sid, p, "modify")
+        prot = policy.protected_paths(ws)
+        for p in prot.readonly:
+            self._grant(name, sid, p, "deny_write")
+        for p in prot.hidden:
+            self._grant(name, sid, p, "deny_read")
+        readable = [*toolchain_dirs(exe), *policy.extra_paths("read")]
+        for p in readable:
+            self._grant(name, sid, p, "read")
+        covered = [Path(os.path.realpath(c)) for c in (ws.root, state, *policy.extra_paths("write"), *readable)]
+        for p in parent_dirs([ws.root, *readable]):
+            if (name, p) in self._no_traverse or any(p == c or c in p.parents for c in covered):
+                continue  # already reachable through a broader grant (one entry per path in the store)
+            try:
+                self._grant(name, sid, p, "traverse")
+            except OSError as e:  # e.g. a drive root the user may not change: tools may still work without it
+                self._no_traverse.add((name, p))
+                logger.info("No list access on a parent folder", extra={"path": str(p), "error": str(e)})
+
     def prepare(self, run: SandboxRun) -> Launch:
+        args = unwrap_launcher(run.args) if isinstance(run.args, list) else run.args
         ws = Workspace.create(run.workspace)
         name = container_name(ws.root)
         sid = self._sid(name)
         state = policy.state_dir(ws.root)
+        exe = Path(args.split('"')[1]) if isinstance(args, str) else Path(args[0])
         try:
-            self._grant(name, sid, ws.root, "modify")
-            self._grant(name, sid, state, "modify")
-            for p in policy.extra_paths("write"):
-                self._grant(name, sid, p, "modify")
-            prot = policy.protected_paths(ws)
-            for p in prot.readonly:
-                self._grant(name, sid, p, "deny_write")
-            for p in prot.hidden:
-                self._grant(name, sid, p, "deny_read")
-            exe = Path(run.args.split('"')[1]) if isinstance(run.args, str) else Path(run.args[0])
-            for p in [*toolchain_dirs(exe), *policy.extra_paths("read")]:
-                self._grant(name, sid, p, "read")
+            with acl_lock():
+                self.grants.reload()
+                self._grant_all(name, sid, ws, state, exe)
         except OSError as e:
             raise SandboxError(f"could not set up the sandbox's file access: {e}") from e
 
         capabilities = [Sid.from_string(_INTERNET_CLIENT)] if run.network == "full" else []
         limits = settings.sandbox.limits
         env = policy.sandbox_env(run.env, state, run.network)
+        try:
+            shim = str(python_shim(state))
+            env["PYTHONPATH"] = os.pathsep.join(p for p in (shim, env.get("PYTHONPATH", "")) if p)
+        except OSError as e:  # Python still runs; only 0o700 temp folders stay unusable
+            logger.warning("Could not write the sandbox's Python shim", extra={"error": str(e)})
 
         def popen(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
             return AppContainerPopen(*args, container_sid=sid, capabilities=capabilities, **kwargs)
 
-        return Launch(run.args, run.cwd, env, popen=popen, job_limits=JobLimits(limits.memory_mb, limits.max_processes))
+        return Launch(args, run.cwd, env, popen=popen, job_limits=JobLimits(limits.memory_mb, limits.max_processes))
 
     def _revoke(self, name: str) -> list[str]:
         """Remove the recorded entries and the profile of one container."""
+        with acl_lock():
+            self.grants.reload()
+            return self._revoke_locked(name)
+
+    def _revoke_locked(self, name: str) -> list[str]:
         cleaned: list[str] = []
         entries = self.grants.remove_container(name)
         with self._lock:
@@ -526,7 +773,9 @@ class AppContainerBackend(Backend):
             if not path.exists():
                 continue
             try:
-                if entry["kind"] in _MASKS:
+                if entry["kind"] == "traverse":
+                    set_access_here(path, sid, 0, _REVOKE)
+                elif entry["kind"] in _MASKS:
                     set_access(path, sid, 0, _REVOKE)
                 else:
                     unprotect(path, sid)

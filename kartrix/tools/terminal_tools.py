@@ -83,7 +83,7 @@ def run_command(command: str, directory: str = ".") -> str:
 
     timeout = settings.permissions.command_timeout
     launch = Launch(decision.run_args, decision.cwd, scrubbed_env())
-    sandbox = sandbox_for(decision.argv)
+    sandbox = sandbox_for(decision.argv, decision.executable)
     if sandbox is not None and decision.network is not None and decision.cwd is not None:
         run = SandboxRun(
             decision.run_args, decision.argv, decision.cwd, launch.env, decision.network, get_workspace().root

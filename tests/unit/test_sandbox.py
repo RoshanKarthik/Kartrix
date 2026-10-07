@@ -218,7 +218,7 @@ def test_docker_args(ws: Workspace) -> None:
 # ── Windows: a real AppContainer ──────────────────────────────────────
 
 _PROBE = r"""
-import os, socket
+import os, socket, tempfile
 from pathlib import Path
 def t(name, fn):
     try:
@@ -233,6 +233,8 @@ t("write_kartrix", lambda: Path(".kartrix/skills/x.md").write_text("x"))
 t("write_outside", lambda: Path(os.environ["OUTSIDE"]).write_text("x"))
 t("temp", lambda: Path(os.environ["TEMP"], "t.txt").write_text("x"))
 t("net", lambda: socket.create_connection(("1.1.1.1", 443), timeout=3).close())
+t("mkdtemp", lambda: Path(tempfile.mkdtemp(dir="."), "f.txt").write_text("x"))  # 0o700 folders (pytest cache)
+t("stat_parent", lambda: Path("..").resolve().stat())  # pytest looks for conftest.py above the project
 """
 
 
@@ -251,7 +253,49 @@ def test_appcontainer_confines_a_real_process(ws: Workspace, tmp_path: Path) -> 
         assert dict(line.split() for line in result.stdout.splitlines()) == {
             "write_ws": "ok", "read_env": "blocked", "write_git": "blocked", "read_skill": "ok",
             "write_kartrix": "blocked", "write_outside": "blocked", "temp": "ok", "net": "blocked",
+            "mkdtemp": "ok", "stat_parent": "ok",
         }  # fmt: skip
+    finally:
+        backend.reset()
+        delete_profile(container_name(ws.root))
+
+
+def test_unwrap_launcher(tmp_path: Path) -> None:
+    import zipfile
+
+    from kartrix.sandbox.windows import unwrap_launcher
+
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    (scripts / "python.exe").write_bytes(b"MZ")
+    launcher = scripts / "tool.exe"
+    launcher.write_bytes(b"MZ stub")
+    with zipfile.ZipFile(launcher, "a") as z:  # a launcher: native stub + appended zip app
+        z.writestr("__main__.py", "print(1)")
+    (scripts / "plain.exe").write_bytes(b"MZ not a zip")
+    assert unwrap_launcher([str(launcher), "-q"]) == [str(scripts / "python.exe"), str(launcher), "-q"]
+    assert unwrap_launcher([str(scripts / "plain.exe"), "-q"]) == [str(scripts / "plain.exe"), "-q"]
+    assert unwrap_launcher([str(scripts / "python.exe"), "-V"]) == [str(scripts / "python.exe"), "-V"]
+    assert unwrap_launcher([]) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="AppContainer is Windows-only")
+def test_appcontainer_runs_venv_launchers(ws: Workspace) -> None:
+    import zipfile
+
+    from kartrix.sandbox.windows import AppContainerBackend, container_name, delete_profile
+    from kartrix.security.environment import scrubbed_env
+    from kartrix.tools.process_runner import run_launch
+
+    launcher = Path(sys.executable).with_name("pytest.exe")
+    if not launcher.is_file() or not zipfile.is_zipfile(launcher):
+        pytest.skip("no console-script launcher next to this interpreter")
+    backend = AppContainerBackend.detect()
+    argv = [str(launcher), "--version"]
+    try:
+        result = run_launch(backend.prepare(SandboxRun(argv, argv, ws.root, scrubbed_env(), "off", ws.root)), 60)
+        assert result.returncode == 0, result.stderr
+        assert "pytest" in result.stdout + result.stderr
     finally:
         backend.reset()
         delete_profile(container_name(ws.root))

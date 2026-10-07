@@ -213,6 +213,32 @@ def test_network_and_sandbox_note_in_decision(root: Path) -> None:
     assert d.network is None and "not sandboxed" in d.reason
 
 
+class _NoNodeSandbox(FakeSandbox):
+    def cannot_run(self, argv: list[str], exe: Path | None) -> str | None:
+        return "no node here" if argv and argv[0] == "pytest" else None
+
+
+def test_program_the_sandbox_cannot_run_falls_back_to_approval(root: Path) -> None:
+    set_sandbox(_NoNodeSandbox(True))
+    d = evaluate("pytest -q", mode="default")
+    assert d.action == "ask" and d.network is None and "not sandboxed: no node here" in d.reason
+    assert evaluate("pytest -q", mode="auto").action == "ask"  # unsandboxed project code always asks
+    assert evaluate("ls", mode="default").network == "off"  # everything else stays sandboxed
+
+
+def test_runs_on_node(tmp_path: Path) -> None:
+    from kartrix.sandbox.windows import runs_on_node
+
+    shim = tmp_path / "tool.cmd"
+    shim.write_text('@"%~dp0/node.exe" "%~dp0/node_modules/tool/cli.js" %*')
+    other = tmp_path / "build.cmd"
+    other.write_text("@echo building")
+    assert runs_on_node(["npm", "test"], None) and runs_on_node(["node.exe", "x.js"], None)
+    assert runs_on_node(["vitest"], tmp_path / "node_modules" / ".bin" / "vitest.cmd")
+    assert runs_on_node(["tool"], shim) and not runs_on_node(["build"], other)
+    assert not runs_on_node(["pytest", "-q"], tmp_path / "pytest.exe") and not runs_on_node([], None)
+
+
 def test_native_backend_required(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     set_sandbox(None)
     monkeypatch.setattr(settings.sandbox, "backend", "native")

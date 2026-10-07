@@ -44,6 +44,11 @@ class Backend(ABC):
     def prepare(self, run: SandboxRun) -> Launch:
         """How to start ``run`` inside the sandbox. Raises :class:`SandboxError`."""
 
+    def cannot_run(self, argv: list[str], exe: Path | None) -> str | None:
+        """Why this backend can't run ``argv`` (then it runs unsandboxed, under the normal approval rules),
+        or None."""
+        return None
+
     def describe(self) -> str:
         """One line for the CLI, e.g. "AppContainer — network off; installs need approval"."""
         net = "only the allow-listed registries for installs" if self.registries_enforced else "installs need approval"

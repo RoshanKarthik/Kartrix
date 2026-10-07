@@ -18,6 +18,7 @@ from __future__ import annotations
 import sys
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from kartrix.config import settings
 from kartrix.observability.logger import get_logger
@@ -117,9 +118,20 @@ def argv_unsandboxed(argv: list[str]) -> bool:
     return bool(argv) and program_name(argv[0]) in UNSANDBOXED_PROGRAMS
 
 
-def sandbox_for(argv: list[str]) -> Backend | None:
-    """The backend that runs ``argv``, or None if it runs unsandboxed."""
-    return None if argv_unsandboxed(argv) else get_sandbox()
+def sandbox_for(argv: list[str], exe: Path | None = None) -> Backend | None:
+    """The backend that runs ``argv`` (``exe``: its resolved executable), or None if it runs unsandboxed."""
+    if argv_unsandboxed(argv):
+        return None
+    backend = get_sandbox()
+    if backend is not None and backend.cannot_run(argv, exe):
+        return None
+    return backend
+
+
+def unsandboxed_reason(argv: list[str], exe: Path | None = None) -> str | None:
+    """Why the active sandbox can't run ``argv`` (None: it can, or there is no sandbox)."""
+    backend = get_sandbox()
+    return backend.cannot_run(argv, exe) if backend is not None and not argv_unsandboxed(argv) else None
 
 
 def network_for(category: Category, backend: Backend) -> Network:

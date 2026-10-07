@@ -35,7 +35,7 @@ from urllib.parse import urlsplit
 from kartrix.config import settings
 from kartrix.observability.logger import get_logger
 from kartrix.sandbox.base import Backend, Network
-from kartrix.sandbox.manager import argv_unsandboxed, network_for, require_native, sandbox_for
+from kartrix.sandbox.manager import argv_unsandboxed, network_for, require_native, sandbox_for, unsandboxed_reason
 from kartrix.security.command_rules import Category, Classification, classify, program_name
 from kartrix.security.permissions import Mode, get_mode
 from kartrix.security.workspace import Workspace, WorkspaceError, get_workspace
@@ -392,10 +392,11 @@ def evaluate(command: str, directory: str = ".", mode: Mode | None = None, *, lo
             category = _check_install(argv, cls, cwd, ws)
         cmdline = batch_command_line(exe, argv[1:]) if _WINDOWS and exe.suffix.lower() in (".bat", ".cmd") else None
 
-        sandbox = sandbox_for(argv)
-        exempt = sandbox is None and not argv_unsandboxed(argv)  # would be sandboxed, but none exists
+        sandbox = sandbox_for(argv, exe)
+        exempt = sandbox is None and not argv_unsandboxed(argv)  # would be sandboxed, but none exists / can't
+        why_not = unsandboxed_reason(argv, exe) or "no sandbox available"
         if exempt and require_native():
-            raise _Deny("sandbox.backend is 'native' but no sandbox is available here (run `kartrix sandbox`)")
+            raise _Deny(f"sandbox.backend is 'native' but this command can't be sandboxed here ({why_not})")
         rule = _user_rule(argv)
         action: Action = mode_action(mode, category, sandbox)
         reason = cls.reason
@@ -407,7 +408,7 @@ def evaluate(command: str, directory: str = ".", mode: Mode | None = None, *, lo
         if sandbox is not None and network is not None:
             reason = f"{reason} ({sandbox.label(network)})"
         elif exempt and category not in (Category.READ, Category.WRITE):
-            reason = f"{reason} (not sandboxed: no sandbox available)"
+            reason = f"{reason} (not sandboxed: {why_not})"
         decision = Decision(action, category, reason, command, argv, cwd, exe, cmdline, network)
     except _Deny as e:
         decision = Decision(_DENY, e.category, str(e), command, argv, cwd)
