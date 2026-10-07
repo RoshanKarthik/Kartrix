@@ -338,7 +338,7 @@ def test_posix_sandbox_confines_a_real_process(ws: Workspace, tmp_path: Path, na
     got.pop("write_outside")  # bubblewrap: lands in the sandbox's private /tmp — check the host instead
     assert not (tmp_path / "outside.txt").exists()
     expected = {"write_ws": "ok", "read_skill": "ok", "temp": "ok", "net": "blocked", "mkdtemp": "ok",
-                **_POSIX_EXPECTED[name]}  # fmt: skip
+                "stat_parent": "ok", **_POSIX_EXPECTED[name]}  # fmt: skip
     diff = {k: (got.get(k), want) for k, want in expected.items() if got.get(k) != want}
     assert got == expected, f"(got, expected) per probe: {diff or got} · stderr: {result.stderr[-300:]}"
     if name == "Landlock":
