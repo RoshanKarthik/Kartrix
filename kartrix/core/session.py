@@ -114,6 +114,7 @@ class CoreSession:
         self._observer: Any = None
         self._index_task: asyncio.Task[None] | None = None
         self._watch = False
+        self._stop_tracing: Any = None
 
     @classmethod
     async def start(
@@ -133,6 +134,7 @@ class CoreSession:
 
         workspace = set_workspace(self.repo_path)  # file tools may only touch this tree
         notice(f"Workspace: {workspace.root} · permission mode: {get_mode()}")
+        self._start_tracing()
         with clock("checkpoints"):
             off = checkpoints.setup()
             if off:
@@ -244,7 +246,27 @@ class CoreSession:
         if result and result.get("messages"):
             emit(AssistantMessage(text=str(result["messages"][-1].content)))
 
+    def _start_tracing(self) -> None:
+        """A local trace of every run (``kartrix trace``); LangSmith too when its key is set."""
+        from kartrix.core.events import bus
+        from kartrix.observability.tracing import TraceRecorder, enable_langsmith
+
+        if settings.tracing.enabled:
+            recorder = TraceRecorder()
+            unsubscribe = bus.subscribe(recorder)
+
+            def stop() -> None:
+                unsubscribe()
+                recorder.close()
+
+            self._stop_tracing = stop
+        if enable_langsmith():
+            notice(f"LangSmith tracing: on (project {settings.tracing.langsmith_project}) — prompts go to LangSmith")
+
     async def close(self) -> None:
+        if self._stop_tracing is not None:
+            self._stop_tracing()
+            self._stop_tracing = None
         if self._index_task is not None and not self._index_task.done():
             self._index_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -299,6 +321,8 @@ class CoreSession:
             if answer is not None:
                 outcome.answer, outcome.cached = answer.text, answer.cached
                 emit(AssistantMessage(text=answer.text, cached=answer.cached))
+                if not answer.text.strip() and outcome.status == "completed":
+                    outcome.status, outcome.detail = "failed", "the model returned no answer"
             stopped = budget.exhausted()  # also the tool-call limit, which ends with a wrap-up message
             if stopped and outcome.status != "error":
                 outcome.status, outcome.detail = "stopped", stopped

@@ -22,6 +22,7 @@ llm:
   judge_model: openai/gpt-oss-20b   # cheaper model used only for LLM-as-judge
   router_model: openai/gpt-oss-20b  # cheap model that routes each request (chat / question / change)
   timeout: 90                   # seconds per request
+  max_output_tokens: 16384      # per call, thinking included (reasoning models return nothing when it's too small)
   retry:                        # transient errors only (timeouts, 429, 5xx)
     max_retries: 2
     initial_delay: 1.0
@@ -186,7 +187,16 @@ retrieval:
   top_k: 5
   candidates: 40                # per-retriever results before fusion
   rrf_k: 60
+  sparse_weight: 0.25            # full-text's weight in the fusion (dense = 1); tuned on the RAG eval
+  rank_normalization: 33        # ts_rank_cd: 1 (÷ log length) | 32 (rank / (rank + 1))
   graph_neighbors: 2             # callers/callees of the top hits added via the code graph (0 = off)
+
+tracing:                        # one JSON-lines trace per run; `kartrix trace` shows them
+  enabled: true
+  dir: .kartrix/traces
+  keep: 200
+  langsmith: auto               # auto: also send traces to LangSmith when LANGSMITH_API_KEY is set; off: never
+  langsmith_project: kartrix
 
 database:                       # URL comes from DATABASE_URL in .env
   pool_size: 5

@@ -251,6 +251,27 @@ _LINE_NUMBER_PREFIX = re.compile(r"^\s*\d+\t", re.MULTILINE)
 
 @tool(parse_docstring=True)
 @_tool_errors
+def delete_file(file_path: str) -> str:
+    """Delete one file, e.g. a temporary helper script you created. Folders are not deleted.
+    The deletion can be undone with /undo like any other change.
+
+    Args:
+        file_path: Path relative to the workspace root.
+    """
+    ensure_writes_allowed()
+    ws = get_workspace()
+    path = ws.resolve(file_path, "write")
+    rel = ws.relative(path)
+    if path.is_dir() and not path.is_symlink():
+        return f"Error: {rel} is a directory; only files can be deleted"
+    if not path.exists() and not path.is_symlink():
+        return f"Error: {rel} does not exist"
+    path.unlink()  # a link is removed itself, never its target
+    return f"Deleted {rel}"
+
+
+@tool(parse_docstring=True)
+@_tool_errors
 def edit_file(file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
     """Replace an exact piece of text in a file. old_string must match the file exactly
     (whitespace and indentation included) and be unique, unless replace_all is true.
@@ -473,4 +494,4 @@ def grep(
 
 
 READ_TOOLS = [read_file, list_directory, file_exists, glob, grep]
-WRITE_TOOLS = [write_file, edit_file, append_file]
+WRITE_TOOLS = [write_file, edit_file, append_file, delete_file]

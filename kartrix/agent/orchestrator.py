@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from kartrix.agent.reliability import final_text
 from kartrix.config import settings
 from kartrix.observability.logger import get_logger
 from kartrix.security.approvals import Approver, run_agent
@@ -15,12 +16,6 @@ logger = get_logger(__name__)
 class QueryAnswer:
     text: str
     cached: bool = False  # served from the semantic cache: the agent didn't run
-
-
-def _text(content: Any) -> str:
-    if isinstance(content, list):  # content blocks (Anthropic)
-        return " ".join(b.get("text", "") for b in content if isinstance(b, dict))
-    return str(content or "")
 
 
 async def handle_query(
@@ -54,11 +49,14 @@ async def handle_query(
 
     agent_config = {"configurable": {"thread_id": thread_id}}
     response = await run_agent(agent, {"messages": [{"role": "user", "content": question}]}, agent_config, approver)
-    answer = _text(response["messages"][-1].content) if response.get("messages") else ""
+    answer = final_text(response.get("messages", []))
 
     run = current_budget()
     stopped = run is not None and run.stop_reason is not None  # never cache a "Stopped: …" answer
-    if semantic_cache is not None and cache_domain is not None and answer and not stopped:
+    # Only answers to read-only questions are cached: a cached reply to "fix X" would claim the fix
+    # without making it. The single-loop agent has no route, so its answers are never cached.
+    question_only = response.get("route") == "question"
+    if semantic_cache is not None and cache_domain is not None and answer and not stopped and question_only:
         try:
             ttl = settings.semantic_cache.ttl
             await semantic_cache.put(question, answer, domain=cache_domain, model=model, ttl=ttl)

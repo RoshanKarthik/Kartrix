@@ -90,6 +90,9 @@ async def test_question_goes_through_the_explorer(ws: Path, monkeypatch: pytest.
     assert ("explorer", "started") in steps and ("coder", "started") not in steps
     calls = [e for e in seen if e.type == "tool_call_started"]
     assert [c.tool for c in calls] == ["read_file"]  # the explorer's tool calls are audited like any other
+    # only the responder's answer is streamed, token by token, and the pieces add up to it
+    deltas = "".join(e.text for e in seen if e.type == "assistant_delta")
+    assert deltas == "`add` in app.py:2 returns a - b, so it subtracts."
 
 
 async def test_chat_skips_the_subagents(ws: Path, monkeypatch: pytest.MonkeyPatch) -> None:

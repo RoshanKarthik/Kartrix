@@ -77,6 +77,26 @@ class AssistantMessage(_Event):
     cached: bool = False  # served from the semantic cache, the agent didn't run
 
 
+class AssistantDelta(_Event):
+    """A piece of the answer while the model is still writing it (token streaming). The complete text
+    follows as :class:`AssistantMessage`; JSONL event logs leave the deltas out."""
+
+    type: Literal["assistant_delta"] = "assistant_delta"
+    text: str
+
+
+class ModelCall(_Event):
+    """One model call finished (for traces): which model, tokens, latency, why it stopped."""
+
+    type: Literal["model_call"] = "model_call"
+    model: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    estimated: bool = False  # tokens counted by Kartrix because the provider sent no usage
+    duration_ms: float = 0.0
+    finish_reason: str | None = None
+
+
 class ToolCallStarted(_Event):
     type: Literal["tool_call_started"] = "tool_call_started"
     call_id: str | None
@@ -204,7 +224,7 @@ class FilesChanged(_Event):
 
 
 Event = Annotated[
-    Notice | RunStarted | RunFinished | AssistantMessage | ToolCallStarted | ToolCallFinished | AgentStep
+    Notice | RunStarted | RunFinished | AssistantMessage | AssistantDelta | ModelCall | ToolCallStarted | ToolCallFinished | AgentStep
     | ContextAssembled | ApprovalRequested
     | ApprovalResolved | PlanProposed | PlanReviewed | ProjectStarted | TaskStarted | TaskFinished | Progress
     | ProjectFinished | FilesChanged,

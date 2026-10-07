@@ -3,6 +3,7 @@ from typing import Any
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 
+from kartrix.agent.reliability import CompletionGuardMiddleware
 from kartrix.agent.tools import remember, search_codebase, symbol_graph
 from kartrix.llm.factory import get_llm, get_model_middleware
 from kartrix.observability.logger import get_logger
@@ -34,14 +35,16 @@ def agent_middleware(approval: ApprovalMiddleware | None, **model_kwargs: Any) -
 
     Approval runs outside the audit wrapper, so the audit row shows the command that actually ran.
     The budget check runs inside it, so refused calls are audited, and inside the retry/fallback
-    wrappers, so every model attempt is counted. The content guard runs innermost, so the audit row
-    records its findings."""
+    wrappers, so every model attempt is counted. The content guard runs inside audit, so the audit row
+    records its findings; the completion guard runs innermost, so a crashing tool becomes an audited
+    ``Error:`` result and an empty or cut-off model turn is retried (``kartrix.agent.reliability``)."""
     return [
         *get_model_middleware(**model_kwargs),
         *([approval] if approval is not None else []),
         AuditMiddleware(),
         BudgetMiddleware(),
         ContentGuardMiddleware(),
+        CompletionGuardMiddleware(),
     ]
 
 

@@ -14,6 +14,7 @@ from kartrix.security.workspace import set_workspace
 from kartrix.tools.filesystem_tools import (
     append_file,
     compile_glob,
+    delete_file,
     edit_file,
     file_exists,
     glob,
@@ -242,3 +243,18 @@ def test_list_and_exists(project: Path) -> None:
     assert call(file_exists, file_path="src/app.py") == "True"
     assert call(file_exists, file_path="src/nope.py") == "False"
     assert "outside" in call(list_directory, directory="..")
+
+
+# ── delete_file ───────────────────────────────────────────────────────
+
+
+def test_delete_file(root: Path) -> None:
+    (root / "scratch.py").write_text("x")
+    (root / "src").mkdir()
+    (root / ".env").write_text("SECRET=1")
+    assert call(delete_file, file_path="scratch.py") == "Deleted scratch.py"
+    assert not (root / "scratch.py").exists()
+    assert "does not exist" in call(delete_file, file_path="scratch.py")
+    assert "is a directory" in call(delete_file, file_path="src") and (root / "src").is_dir()
+    assert call(delete_file, file_path=".env").startswith("Error") and (root / ".env").exists()  # protected
+    assert call(delete_file, file_path="../outside.txt").startswith("Error")  # jailed

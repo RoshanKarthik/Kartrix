@@ -80,6 +80,9 @@ class LLMSettings(_Section):
     judge_model: str | None = None  # cheaper model for LLM-as-judge; falls back to `model`
     router_model: str | None = None  # cheap model that routes each request; falls back to the judge model
     timeout: float = Field(90.0, gt=0)  # per request; free-tier models can hang
+    # Output tokens per model call, thinking included. Reasoning models need room: the NVIDIA client's
+    # default (1024) is used up by the thinking alone and the reply comes back empty.
+    max_output_tokens: int = Field(16384, ge=256)
     retry: RetrySettings = RetrySettings()
     # Tried in order when the primary still fails after its retries; [] disables fallback.
     fallbacks: list[LLMModelRef] = Field(
@@ -283,6 +286,10 @@ class RetrievalSettings(_Section):
     top_k: int = Field(5, gt=0)
     candidates: int = Field(40, gt=0)  # results taken from each retriever before fusion
     rrf_k: int = Field(60, gt=0)  # reciprocal-rank-fusion constant
+    # weight of the full-text ranking in the fusion (dense = 1): keyword ranking alone is much weaker
+    sparse_weight: float = Field(0.25, ge=0, le=1)  # tuned on the RAG eval (2026-10-07): 0.25 > 0.5 > 1
+    # ts_rank_cd normalisation bits (0 = none, 1 = divide by 1 + log(length), 32 = rank / (rank + 1))
+    rank_normalization: int = Field(33, ge=0, le=63)  # 1 | 32: long docs and tests no longer win on volume
     graph_neighbors: int = Field(2, ge=0)  # callers/callees of the top hits added to search results (0 = off)
 
 
@@ -300,6 +307,16 @@ class LoggingSettings(_Section):
     # Kept quiet by default so log lines don't interleave with the interactive REPL.
     console_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "WARNING"
     file: str | None = ".kartrix/logs/kartrix.jsonl"  # null disables file logging
+
+
+class TracingSettings(_Section):
+    """Local run traces (kartrix.observability.tracing) and optional LangSmith."""
+
+    enabled: bool = True
+    dir: str = ".kartrix/traces"  # one JSON-lines file per run; the agent can't read .kartrix/
+    keep: int = Field(200, ge=1)  # newest traces kept
+    langsmith: Literal["auto", "off"] = "auto"  # auto: on when LANGSMITH_API_KEY is set (sends prompts to LangSmith)
+    langsmith_project: str = "kartrix"
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -348,6 +365,8 @@ class AgentsSettings(_Section):
     # multi: router + explorer/coder/reviewer subagents (kartrix.agent.graph); single: one ReAct loop
     architecture: Literal["multi", "single"] = "multi"
     max_review_rounds: int = Field(2, ge=1, le=5)  # coder → reviewer rounds before answering anyway
+    # empty / cut-off model turns answered with "continue" before giving up (kartrix.agent.reliability)
+    max_nudges: int = Field(2, ge=0, le=5)
 
 
 class Settings(BaseSettings):
@@ -373,6 +392,7 @@ class Settings(BaseSettings):
     sandbox: SandboxSettings = SandboxSettings()
     database: DatabaseSettings = DatabaseSettings()
     logging: LoggingSettings = LoggingSettings()
+    tracing: TracingSettings = TracingSettings()
 
     @classmethod
     def settings_customise_sources(

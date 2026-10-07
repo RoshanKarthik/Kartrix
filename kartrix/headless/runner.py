@@ -35,6 +35,8 @@ class JsonlWriter:
         self._lock = threading.Lock()
 
     def __call__(self, event: Any) -> None:
+        if event.type == "assistant_delta":  # the full text follows as assistant_message
+            return
         line = json.dumps(event.model_dump(mode="json"), ensure_ascii=False)
         with self._lock:
             self.stream.write(line + "\n")
@@ -177,7 +179,7 @@ def run_headless(spec_path: str, report: str | None = None, events: str | None =
             if events_file is not None:
                 events_file.close()
 
-    data = build_report(spec, spec_path, outcome, list(seen), started)
+    data = build_report(spec, spec_path, outcome, [e for e in seen if e.type != "assistant_delta"], started)
     if error:
         data["detail"] = error
         if error == "interrupted":

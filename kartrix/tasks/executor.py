@@ -115,7 +115,7 @@ async def _judge_task(task: dict, agent_output: str) -> _JudgeVerdict:
     Lightweight LLM-as-judge. Uses judge_model (cheaper) from config.
     Returns a structured verdict with passed/score/reason.
     """
-    llm = get_chat_model("judge", temperature=0, max_tokens=1000)
+    llm = get_chat_model("judge", temperature=0)
     judge_agent = create_agent(
         llm,
         tools=[],
@@ -157,7 +157,7 @@ async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None, a
     With an ``approver``, commands that need approval pause the agent until it answers; without
     one (no one to ask) they are refused and the agent is told why.
     """
-    llm = get_chat_model("main", temperature=0, max_tokens=3000)
+    llm = get_chat_model("main", temperature=0)
 
     tools = _TOOLS_BY_TYPE.get(task.get("task_type", ""), _DEFAULT_TOOLS)
     system_prompt = _build_system_prompt(task, dep_outputs or [])

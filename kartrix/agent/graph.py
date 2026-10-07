@@ -41,9 +41,11 @@ from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 from kartrix.agent import context as agent_context
+from kartrix.agent.reliability import CompletionGuardMiddleware, final_text
+from kartrix.agent.streaming import AnswerStream
 from kartrix.agent.tools import remember, search_codebase, symbol_graph
 from kartrix.config import settings
-from kartrix.core.events import AgentStep, emit
+from kartrix.core.events import AgentStep, Event, ToolCallFinished, ToolCallStarted, collecting, emit
 from kartrix.llm.factory import get_chat_model, get_model_middleware
 from kartrix.memory import long_term
 from kartrix.observability.logger import get_logger
@@ -64,6 +66,7 @@ class AgentState(TypedDict, total=False):
     context: str  # assembled context for this turn (memory, project notes) — see kartrix.agent.context
     findings: str
     change_report: str
+    changed_files: list[str]  # what the coder's write tools changed this turn (from its tool events)
     review_notes: str
     approved: bool
     rounds: int
@@ -99,15 +102,27 @@ with remember.
 CODER_PROMPT = f"""You are the coder: you implement changes in this repository.
 Make the smallest correct change that does what was asked, matching the existing code style. Read a
 file before editing it; use edit_file for small changes. Add or update tests when behaviour changes and
-run them with run_command. Finish with a short report: the files you changed, what you changed and
-the result of the tests. Follow the project instructions and remembered preferences and lessons you are
-given; save a new lasting fact or user preference with remember.
+run the project's tests with run_command (e.g. "pytest -q", "node --test", "npm test").
+
+Working rules:
+- run_command runs one program directly — no shell, no pipes, no "&&", no "cmd /c", no "python -c".
+  Never write helper scripts to work around a command; put checks into the project's tests instead.
+- If a command fails because of the environment (a missing tool, a permission or sandbox error) rather
+  than the code, don't fight it: stop and say so in your report.
+- Only create the files the task needs. Delete any temporary file you created with delete_file.
+- Don't re-read a file you already read unless you changed it since.
+
+Finish with a short report: the files you changed, what you changed and the result of the tests. Follow
+the project instructions and remembered preferences and lessons you are given; save a new lasting fact
+or user preference with remember.
 {SECURITY_RULES}"""
 
 REVIEWER_PROMPT = f"""You are the reviewer: you independently check a change another agent made.
-Read the changed files and run the relevant tests. Approve only if the change does everything that was
-asked, is correct, keeps the existing behaviour and style, and the tests pass. Otherwise list concrete
-issues to fix. Do not edit files yourself.
+Read the changed files and run the project's tests with run_command (one program, no shell). Approve
+only if the change does everything that was asked, is correct, keeps the existing behaviour and style,
+the tests pass, and no unrelated files (scratch scripts, notes, debug output) were added. Otherwise list
+concrete issues to fix. Do not edit files yourself, and don't retry a command that fails because of the
+environment — report it as an issue.
 {SECURITY_RULES}"""
 
 RESPOND_PROMPT = """You are Kartrix, a senior software engineer helping the user with their repository.
@@ -138,6 +153,24 @@ def _brief(state: AgentState, *parts: str) -> str:
         context = section.render() if section else ""
     blocks = [context, *parts, f"## Request (the user's latest message)\n{_request(state)}"]
     return "\n\n".join(b for b in blocks if b)
+
+
+WRITE_TOOL_NAMES = frozenset({"write_file", "edit_file", "append_file", "delete_file"})
+
+
+def _written_files(events: list[Event], before: list[str]) -> list[str]:
+    """Paths the coder's write tools changed successfully, in order, added to ``before``."""
+    targets = {e.call_id: e.target for e in events if isinstance(e, ToolCallStarted) and e.tool in WRITE_TOOL_NAMES}
+    out = list(before)
+    for e in events:
+        if (
+            isinstance(e, ToolCallFinished)
+            and e.outcome == "ok"
+            and (path := targets.get(e.call_id))
+            and path not in out
+        ):
+            out.append(path)
+    return out
 
 
 def _stopped() -> str | None:
@@ -188,7 +221,7 @@ class AgentGraph:
         )  # fmt: skip
         self.responder = create_agent(
             llm, tools=[], system_prompt=RESPOND_PROMPT,
-            middleware=[*get_model_middleware(), BudgetMiddleware()],
+            middleware=[*get_model_middleware(), BudgetMiddleware(), CompletionGuardMiddleware()],
         )  # fmt: skip
 
     # ── nodes ─────────────────────────────────────────────────────────
@@ -213,6 +246,7 @@ class AgentGraph:
             "rounds": 0,
             "findings": "",
             "change_report": "",
+            "changed_files": [],
             "review_notes": "",
             "steps": ["router"],
         }
@@ -225,12 +259,20 @@ class AgentGraph:
         parts = [f"## Explorer findings\n{state.get('findings', '')}"]
         if state.get("review_notes"):
             parts.append(f"## The reviewer rejected your previous attempt. Fix these issues\n{state['review_notes']}")
-        report = await self._run("coder", self.coder, _brief(state, *parts))
-        return {"change_report": report, "rounds": state.get("rounds", 0) + 1, "steps": ["coder"]}
+        with collecting() as seen:
+            report = await self._run("coder", self.coder, _brief(state, *parts))
+        return {
+            "change_report": report,
+            "changed_files": _written_files(seen, state.get("changed_files", [])),
+            "rounds": state.get("rounds", 0) + 1,
+            "steps": ["coder"],
+        }
 
     async def review(self, state: AgentState) -> dict[str, Any]:
+        files = "\n".join(f"- {f}" for f in state.get("changed_files", [])) or "(none)"
         prompt = (
             f"Request: {_request(state)}\n\nThe coder's report:\n{state.get('change_report', '')}\n\n"
+            f"Files the coder changed (from its tool calls):\n{files}\n\n"
             "Check the change and give your verdict."
         )
         emit(AgentStep(agent="reviewer", status="started"))
@@ -257,8 +299,13 @@ class AgentGraph:
             )
             parts.append(f"## Reviewer\nThe reviewer {verdict}")
         emit(AgentStep(agent="responder", status="started"))
-        out = await self.responder.ainvoke({"messages": [HumanMessage(_brief(state, *parts))]})
-        answer = _text(out["messages"][-1].content) if out.get("messages") else ""
+        out = await self.responder.ainvoke(
+            {"messages": [HumanMessage(_brief(state, *parts))]}, config={"callbacks": [AnswerStream()]}
+        )
+        answer = final_text(out.get("messages", []))
+        if not answer:  # the model gave nothing back even after the nudges: hand over the reports themselves
+            logger.warning("Responder returned no answer; falling back to the subagents' reports")
+            answer = "\n\n".join(parts) or "Sorry — the model returned no answer. Please try again."
         emit(AgentStep(agent="responder", status="finished"))
         return {"messages": [AIMessage(answer)], "steps": ["responder"]}
 
@@ -274,7 +321,10 @@ class AgentGraph:
     async def _run(self, name: str, agent: Any, prompt: str) -> str:
         emit(AgentStep(agent=name, status="started"))
         out = await agent.ainvoke({"messages": [HumanMessage(prompt)]})
-        report = _text(out["messages"][-1].content) if out.get("messages") else ""
+        report = final_text(out.get("messages", []))
+        if not report and not _stopped():
+            logger.warning("Subagent returned no report", extra={"agent": name})
+            report = f"(the {name} finished without a report)"
         emit(AgentStep(agent=name, status="finished", summary=report[:300]))
         return report
 

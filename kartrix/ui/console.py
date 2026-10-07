@@ -24,6 +24,7 @@ class ConsoleRenderer:
         self.show_tool_calls = show_tool_calls
         self._held: list[ev.Event] | None = None
         self._lock = threading.Lock()
+        self._streamed: set[str | None] = set()  # runs whose answer was already printed token by token
 
     def hold(self) -> None:
         """Keep events back (e.g. while the prompt waits for input) until :meth:`release`."""
@@ -54,7 +55,16 @@ class ConsoleRenderer:
                 self._line(_NOTICE_PREFIX[level] + text, _NOTICE_STYLE[level])
             case ev.RunStarted(kind="ask", input=question):
                 self._line(f"Working on: {question[:200]}… (Ctrl+C stops)", "dim")
-            case ev.AssistantMessage(text=text, cached=cached):
+            case ev.AssistantDelta(text=text, run_id=run_id):
+                if run_id not in self._streamed:
+                    self._streamed.add(run_id)
+                    self.console.print()
+                self.console.print(text, end="", markup=False, highlight=False, soft_wrap=True)
+            case ev.AssistantMessage(text=text, cached=cached, run_id=run_id):
+                if run_id in self._streamed:
+                    self._streamed.discard(run_id)
+                    self.console.print()  # the answer is on screen already; end its line
+                    return
                 if cached:
                     self._line("(answer from the semantic cache)", "dim")
                 self.console.print(text, markup=False, highlight=False)
