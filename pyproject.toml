@@ -51,7 +51,7 @@ dev = [
     "ruff>=0.13",
     "types-pyyaml>=6.0.12.20260906",
 ]
-# The agent and RAG evals (`kartrix eval`, step 2.3) — for developing Kartrix, not shipped to users.
+# The agent and RAG evals (`kartrix eval`) — for developing Kartrix, not shipped to users.
 eval = [
     "deepeval>=4.0.9",
 ]

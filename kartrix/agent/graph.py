@@ -1,4 +1,4 @@
-"""The chat agent as an explicit LangGraph ``StateGraph`` with focused subagents (step 3.1/3.3).
+"""The chat agent as an explicit LangGraph ``StateGraph`` with focused subagents.
 
 ::
 

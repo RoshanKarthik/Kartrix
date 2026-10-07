@@ -1,4 +1,4 @@
-"""Fast startup (2.2): the prompt path stays light, the REPL answers before the core is up, background
+"""Fast startup: the prompt path stays light, the REPL answers before the core is up, background
 work never prints over the prompt, the index state reaches search results, fallback models are lazy."""
 
 from __future__ import annotations

@@ -1,3 +1,0 @@
-# Keep the package download cache project-local (no global cache).
-# The Python 3.12 interpreter is installed into .uv-python/ (see docs/PROGRESS.md).
-cache-dir = ".uv-cache"

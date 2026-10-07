@@ -3,7 +3,7 @@
 # kind: locate | explain | flow | config | security | test.  quick: part of the everyday subset.
 # Add questions the way a user would ask them — not with the identifiers already in them.
 questions:
-  # ── kartrix (this repository, at step 2.2) ───────────────────────────────────────────────
+  # ── kartrix (this repository, at the pinned commit) ─────────────────────────────────────
   - id: k01-command-modes
     repo: kartrix
     kind: locate

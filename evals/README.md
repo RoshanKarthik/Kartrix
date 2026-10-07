@@ -1,6 +1,6 @@
 # Kartrix evals
 
-The agent and RAG eval suite (roadmap step 2.3). It measures **Kartrix itself** — does retrieval find
+The agent and RAG eval suite. It measures **Kartrix itself** — does retrieval find
 the right code, does the agent finish coding tasks correctly, efficiently and safely — not the apps
 people build with it. Every architecture or optimisation change is kept only if these numbers agree.
 
@@ -18,16 +18,16 @@ uv run kartrix eval report <results.json>      # re-render a report
 Needs Postgres (`docker compose up -d`, migrations applied), `NVIDIA_API_KEY` (and `HF_TOKEN` for the
 fallback) in `.env`, git, and Node ≥ 23.6 for the TypeScript tasks. Results and a self-contained HTML
 report go to `.kartrix/evals/results/<time>-<suite>/`; `--compare` exits 1 on a regression with
-`--fail-on-regression` (the nightly CI workflow `.github/workflows/evals.yml` does that).
+`--fail-on-regression`, for use in CI.
 
 ## What is measured
 
-**RAG** (`rag/golden.yaml`, 100 questions over three repos pinned in `repos.yaml`: this repository at
-step 2.2, the FastAPI full-stack template, an Express + Prisma API):
+**RAG** (`rag/golden.yaml`, 100 questions over three repos pinned in `repos.yaml`: this repository at a
+pinned commit, the FastAPI full-stack template, an Express + Prisma API):
 
 - retrieval per mode — `dense`, `lexical`, `hybrid` (RRF) and `search_first` (no index: files ranked
-  by the question's words, the stand-in for step 3.2's search-first context; `repo_map` arrives with
-  3.2): hit rate, recall@k, precision@k, MRR, nDCG over distinct files, plus chunk precision@5 (what
+  by the question's words, a stand-in for search-first context; `repo_map` is listed but
+  not measured yet): hit rate, recall@k, precision@k, MRR, nDCG over distinct files, plus chunk precision@5 (what
   the agent actually reads), symbol recall, latency and context tokens per query;
 - answers (the configured mode's context, main model) judged by DeepEval with Kartrix's judge model:
   faithfulness, answer relevancy, contextual precision, contextual recall.

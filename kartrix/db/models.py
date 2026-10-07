@@ -330,7 +330,7 @@ class CheckpointWrite(Base):
 
 
 class Memory(Base):
-    """Long-term memory (3.6): a project fact, a user preference or a lesson learned, with its embedding
+    """Long-term memory: a project fact, a user preference or a lesson learned, with its embedding
     for recall by relevance. ``repo_root`` is NULL for user-level memories (they apply in every repo)."""
 
     __tablename__ = "memories"

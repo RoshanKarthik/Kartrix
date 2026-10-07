@@ -1,4 +1,4 @@
-"""Long-term memory (step 3.6): what Kartrix should still know next week.
+"""Long-term memory: what Kartrix should still know next week.
 
 Three kinds, stored with an embedding in the ``memories`` table and recalled by relevance:
 

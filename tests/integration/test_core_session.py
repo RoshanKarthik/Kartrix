@@ -1,4 +1,4 @@
-"""CoreSession startup (2.2): the index is built in the background (or waited for), with its state
+"""CoreSession startup: the index is built in the background (or waited for), with its state
 reported, the watcher started after it, and a timing breakdown recorded."""
 
 from __future__ import annotations

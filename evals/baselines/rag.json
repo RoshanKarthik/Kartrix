@@ -56,7 +56,7 @@
         "name": "kartrix",
         "source": "self",
         "url": null,
-        "commit": "c0e37b6e7f4c12cc0968583b93c168df7c7b5c3e",
+        "commit": "a968f835555eeb00a25b0e74bc28913a95bf460d",
         "stacks": [
           "python"
         ],

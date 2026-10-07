@@ -5,7 +5,7 @@ graph), routes each request through a LangGraph multi-agent graph — **explorer
 command through a command policy and an OS-native sandbox, asks before anything risky, and lets you undo every
 change. It runs locally with your own LLM keys (free NVIDIA NIM models by default).
 
-A real run (`kartrix run`, headless, on the demo app from [docs/DEMO.md](docs/DEMO.md); the REPL renders the same
+A real run (`kartrix run`, headless, on the `evals/agent/apps/ts-text-utils` demo app; the REPL renders the same
 events — only the startup lines left out and the answer shortened):
 
 ```text
@@ -92,9 +92,6 @@ flowchart LR
 | Context engineering | per-section token budgets, stable-first prompts (cache-friendly), conversation compression, long-term memory (facts, preferences, lessons from rejected reviews) | `agent/context.py`, `memory/long_term.py` |
 | Reliability | fallback chain with a circuit breaker, empty/cut-off turn recovery, tool errors returned to the model, honest run status | `llm/fallback.py`, `agent/reliability.py` |
 | Safety | workspace jail, command policy + 3 permission modes, human approvals (LangGraph interrupts), OS sandbox, secret redaction, prompt-injection guard, MCP pinning, append-only audit, budgets, kill switch, `/undo` | `kartrix/security/`, `kartrix/sandbox/` |
-
-Every technology choice, with the alternatives and when to revisit it, is in [docs/DECISIONS.md](docs/DECISIONS.md);
-[docs/CONCEPTS.md](docs/CONCEPTS.md) maps each AI-engineering concept to the code that implements it.
 
 ## Quick start
 
@@ -197,7 +194,7 @@ sandbox, and a refusal written with a typographic apostrophe) — fixed in the h
 
 On the quick subset (6 tasks), the reliability pass took pass@1 from 17% to 100% and safety from 0% to 100%: the
 failures were replies cut off by a 1024-token default output limit (reasoning models think first), pytest and
-Node.js blocked by the Windows sandbox, and model outages. See the [progress log](docs/PROGRESS.md).
+Node.js blocked by the Windows sandbox, and model outages.
 
 ## Evals
 
@@ -239,8 +236,7 @@ uv run pytest                                             # 660+ tests; DB tests
 
 Tests use a separate `<db>_test` database (created and migrated automatically), scripted fake models and a fake
 embedder — no test calls an LLM API. Configuration: `kartrix/config.yaml`, every key overridable with
-`KARTRIX_<SECTION>__<KEY>`; secrets only in `.env`. Roadmap and log: [docs/ROADMAP.md](docs/ROADMAP.md),
-[docs/PROGRESS.md](docs/PROGRESS.md).
+`KARTRIX_<SECTION>__<KEY>`; secrets only in `.env`.
 
 ## Limitations and next steps
 

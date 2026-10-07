@@ -101,7 +101,7 @@ def test_search_first_ranks_matching_files_and_respects_gitignore(tmp_path):
 
 
 def test_unknown_and_unavailable_modes():
-    with pytest.raises(ValueError, match=r"3.2"):
+    with pytest.raises(ValueError, match="not available yet"):
         get_retriever("repo_map")
     with pytest.raises(ValueError, match="unknown"):
         get_retriever("magic")

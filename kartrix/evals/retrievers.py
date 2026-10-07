@@ -9,8 +9,8 @@
   graph (GraphRAG, ``retrieval.graph_neighbors`` of them) — same k, so it compares fairly with hybrid
 - ``search_first`` no index at all: ranks the repository's files by how well they match the question's
   words (what an agent finds with grep/glob before it reads), returning the best-matching window of
-  each file. A stand-in for the search-first context of step 3.2, so the index can be judged against it.
-- ``repo_map`` arrives with step 3.2 (listed so reports show it as not measured yet).
+  each file. A stand-in for search-first context, so the index can be judged against it.
+- ``repo_map`` is listed so reports show it as not measured yet.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ Retriever = Callable[[str, Path, int], Awaitable[list[Chunk]]]
 INDEX_MODES = ("dense", "lexical", "hybrid", "dense_rerank", "hybrid_rerank", "graph")
 ALL_MODES = (*INDEX_MODES, "search_first", "repo_map")
 DEFAULT_MODES = (*INDEX_MODES, "search_first")
-UNAVAILABLE = {"repo_map": "built in step 3.2"}
+UNAVAILABLE = {"repo_map": "not implemented as an eval mode"}
 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _STOP = frozenset(

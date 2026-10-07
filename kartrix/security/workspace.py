@@ -14,8 +14,8 @@ A path given by the model is resolved like this:
    (gitignore syntax): secrets, ``.git/`` (hooks would run code), Kartrix's own state.
 
 Residual risk: a symlink swapped in between the check and the open (TOCTOU). Writes go
-through a temp file + ``os.replace`` so they never write *through* a link; the sandbox
-(step 1.7) is the real boundary for anything that runs code.
+through a temp file + ``os.replace`` so they never write *through* a link; the OS sandbox
+is the real boundary for anything that runs code.
 """
 
 from __future__ import annotations

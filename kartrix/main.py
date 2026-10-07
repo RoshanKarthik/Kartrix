@@ -1,6 +1,6 @@
 """The interactive REPL: one front end of :mod:`kartrix.core` (renders its events, asks the user).
 
-Fast start (2.2): the prompt appears at once. The heavy part — importing the agent stack and
+Fast start: the prompt appears at once. The heavy part — importing the agent stack and
 :meth:`CoreSession.start` (model clients, sandbox, database, agent) — runs in the background,
 and the code index after it. Typing never waits; a command that needs the core waits only for
 what is still starting. ``/help`` and ``/exit`` always answer immediately. Messages from the

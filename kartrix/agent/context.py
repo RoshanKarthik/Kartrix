@@ -1,4 +1,4 @@
-"""Per-turn context for the agent graph (steps 3.2 / 3.6): assembled from labelled, budgeted sections;
+"""Per-turn context for the agent graph: assembled from labelled, budgeted sections;
 old turns compressed.
 
 - :func:`assemble` — the graph's ``assemble`` node. Builds the ``context`` the subagents receive from

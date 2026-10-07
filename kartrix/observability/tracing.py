@@ -1,4 +1,4 @@
-"""Local run traces (roadmap 2.4) and optional LangSmith.
+"""Local run traces and optional LangSmith.
 
 Every run (a chat turn, a ``/plan`` run, a headless run) is recorded as one JSON-lines file in
 ``tracing.dir`` (default ``.kartrix/traces/``, which the agent itself can't read): the run's events —
