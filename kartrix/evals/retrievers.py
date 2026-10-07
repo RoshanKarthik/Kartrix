@@ -128,7 +128,7 @@ async def _graph(query: str, root: Path, k: int) -> list[Chunk]:
     from kartrix.context.retrievers import graph
     from kartrix.context.retrievers.pg_hybrid import retrieve
 
-    seeds = await retrieve(query, k=k, repo_root=root, mode="hybrid")
+    seeds = await retrieve(query, k=k, repo_root=root, mode=settings.retrieval.mode)
     related = await graph.neighbors(seeds, root, n=min(max(settings.retrieval.graph_neighbors, 1), k - 1))
     return seeds[: k - len(related)] + related
 

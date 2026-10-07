@@ -20,7 +20,7 @@ from pathlib import Path
 from pathspec import GitIgnoreSpec
 
 from kartrix.config import settings
-from kartrix.context.indexers.code_parser import ALL_EXTENSIONS
+from kartrix.context.indexers.code_parser import is_indexable_name
 from kartrix.observability.logger import get_logger
 
 logger = get_logger(__name__)
@@ -107,7 +107,7 @@ class RepoFilter:
         rule (config, .gitignore, or an ignored ancestor dir) excludes it. Doesn't touch
         the file itself, so it also works for deleted paths."""
         rel = self.rel(path)
-        if rel is None or rel == "." or Path(rel).suffix.lower() not in ALL_EXTENSIONS:
+        if rel is None or rel == "." or not is_indexable_name(rel):
             return False
         parts = rel.split("/")
         for i in range(1, len(parts)):
@@ -123,7 +123,7 @@ class RepoFilter:
         return rel is not None and self.passes_rules(path) and self._file_ok(self.root / rel)
 
     def _file_ok(self, path: Path) -> bool:
-        if path.suffix.lower() not in ALL_EXTENSIONS or path.is_symlink():
+        if not is_indexable_name(path) or path.is_symlink():
             return False
         try:
             if not path.is_file() or path.stat().st_size > self.max_bytes:

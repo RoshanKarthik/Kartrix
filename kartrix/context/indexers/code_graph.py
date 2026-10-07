@@ -21,7 +21,12 @@ from typing import Any
 
 from tree_sitter_languages import get_parser
 
-from kartrix.context.indexers.code_parser import BLOCK_NODE_TYPES, EXTENSION_TO_LANGUAGE, _extract_name
+from kartrix.context.indexers.code_parser import (
+    BLOCK_NODE_TYPES,
+    EXTENSION_TO_LANGUAGE,
+    _extract_name,
+    is_split_class,
+)
 
 CALL_TYPES = {
     "call",  # python
@@ -73,7 +78,9 @@ def extract_edges(source: str, rel: str) -> list[Edge]:
 
 
 def _walk(node: Any, data: bytes, rel: str, owner: str, found: dict[tuple[str, str, str], Edge]) -> None:
-    if node.type in BLOCK_NODE_TYPES and owner == rel:  # top-level block: its name owns what's inside
+    # A top-level block's name owns what's inside — or, for a class indexed method by method, each
+    # method's name (the chunk names, so neighbours and symbol_graph line up with the chunks).
+    if node.type in BLOCK_NODE_TYPES and owner == rel and not is_split_class(node):
         owner = _extract_name(node, data)
     targets: list[tuple[str, str]] = []
     if node.type in CALL_TYPES:

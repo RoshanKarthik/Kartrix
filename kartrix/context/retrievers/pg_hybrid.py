@@ -4,7 +4,7 @@
   dense  — cosine distance on the halfvec HNSW index
   sparse — ``ts_rank_cd`` over the weighted tsvector (GIN index)
   hybrid — both, each taking ``candidates`` results, merged by reciprocal rank fusion:
-           score = Σ 1 / (rrf_k + rank). Rank-based, so the two score scales never need
+           score = 1 / (rrf_k + dense rank) + sparse_weight / (rrf_k + sparse rank). Rank-based, so the two score scales never need
            to be compared. Falls back to dense when the query has no searchable words.
 """
 
@@ -41,7 +41,7 @@ dense AS (
 _SPARSE = """
 sparse AS (
     SELECT id, row_number() OVER (ORDER BY r DESC) AS rnk
-    FROM (SELECT c.id, ts_rank_cd(c.tsv, q) AS r
+    FROM (SELECT c.id, ts_rank_cd(c.tsv, q, :norm) AS r
           FROM code_chunks c, to_tsquery('english'::regconfig, :tsq) q
           WHERE c.repo_root = :repo AND c.tsv @@ q ORDER BY r DESC LIMIT :n) s
 )"""
@@ -65,7 +65,7 @@ def _sql(mode: Mode) -> str:
     else:
         ctes = [_DENSE, _SPARSE]
         join = "dense FULL OUTER JOIN sparse USING (id)"
-        score = "COALESCE(1.0 / (:rrf_k + dense.rnk), 0) + COALESCE(1.0 / (:rrf_k + sparse.rnk), 0)"
+        score = "COALESCE(1.0 / (:rrf_k + dense.rnk), 0) + :sw * COALESCE(1.0 / (:rrf_k + sparse.rnk), 0)"
     id_col = "f.id" if mode != "hybrid" else "id"
     # Only the constant fragments above are interpolated; every value is a bound parameter.
     return f"""
@@ -103,6 +103,9 @@ async def retrieve(
         stmt = stmt.bindparams(bindparam("qvec", type_=HALFVEC(EMBEDDING_DIMS)))
     if mode != "dense":
         params["tsq"] = tsq
+        params["norm"] = cfg.rank_normalization
+    if mode == "hybrid":
+        params["sw"] = cfg.sparse_weight
 
     logger.info("Retrieving chunks", extra={"mode": mode, "k": k, "query": query})
     async with session_scope() as s:

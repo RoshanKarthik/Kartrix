@@ -42,7 +42,9 @@ logger = get_logger(__name__)
 # re-embedded even if its content didn't change.
 # v2: tree-sitter byte offsets sliced correctly (v1 shifted chunks after non-ASCII text).
 # v3: secrets are redacted from chunk content before embedding/storing (B6).
-CHUNKER_VERSION = 3
+# v4: more file types (Prisma, SQL, HTML, Vue, Dockerfile, …), classes over SPLIT_CLASS_LINES split into an
+#     outline + one chunk per method, anonymous functions named after their binding or route.
+CHUNKER_VERSION = 4
 # Stored per file: changing the chunker *or* the secret-redaction rules re-indexes everything.
 INDEX_VERSION = CHUNKER_VERSION * 1000 + RULES_VERSION
 
