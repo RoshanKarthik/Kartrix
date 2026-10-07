@@ -60,6 +60,13 @@ def _no_langsmith(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _placeholder_api_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Models are built but never called: placeholder keys, so tests pass without a .env and can't use real ones."""
+    for name in ("NVIDIA_API_KEY", "HF_TOKEN"):
+        monkeypatch.setenv(name, "placeholder-not-a-real-key")
+
+
+@pytest.fixture(autouse=True)
 def _no_reranker() -> Iterator[None]:
     """No test calls the NIM reranker: the stand-in keeps the first-stage order."""
     from kartrix.context.rerank import set_reranker
