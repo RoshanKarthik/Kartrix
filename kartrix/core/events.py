@@ -96,6 +96,15 @@ class ToolCallFinished(_Event):
     output_chars: int | None = None
 
 
+class AgentStep(_Event):
+    """A subagent of the chat graph started or finished (router, explorer, coder, reviewer, responder)."""
+
+    type: Literal["agent_step"] = "agent_step"
+    agent: str
+    status: Literal["started", "finished"]
+    summary: str | None = None
+
+
 class ApprovalRequested(_Event):
     type: Literal["approval_requested"] = "approval_requested"
     tool_call_id: str
@@ -175,7 +184,8 @@ class FilesChanged(_Event):
 
 
 Event = Annotated[
-    Notice | RunStarted | RunFinished | AssistantMessage | ToolCallStarted | ToolCallFinished | ApprovalRequested
+    Notice | RunStarted | RunFinished | AssistantMessage | ToolCallStarted | ToolCallFinished | AgentStep
+    | ApprovalRequested
     | ApprovalResolved | PlanProposed | PlanReviewed | ProjectStarted | TaskStarted | TaskFinished | Progress
     | ProjectFinished | FilesChanged,
     Field(discriminator="type"),

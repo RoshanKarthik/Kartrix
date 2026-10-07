@@ -64,6 +64,12 @@ class ConsoleRenderer:
                 self._line(f"  → {tool} {(target or '')[:120]}".rstrip(), "dim")
             case ev.ToolCallFinished(tool=tool, outcome=outcome) if self.show_tool_calls and outcome != "ok":
                 self._line(f"  ✗ {tool}: {outcome}", "yellow" if outcome in ("declined", "stopped") else "red")
+            case ev.AgentStep(agent="router", status="finished", summary=route):
+                self._line(f"◆ router: {route}", "dim")
+            case ev.AgentStep(agent=agent, status="started") if agent in ("explorer", "coder", "reviewer"):
+                self._line(f"◆ {agent} working…", "cyan")
+            case ev.AgentStep(agent="reviewer", status="finished", summary=summary):
+                self._line(f"◆ reviewer: {summary}", "green" if summary == "approved" else "yellow")
             case ev.PlanReviewed(approved=False):
                 self._line("Re-planning with your feedback...", "dim")
             case ev.ProjectStarted(project_id=pid, resumed=True, recovered=recovered):

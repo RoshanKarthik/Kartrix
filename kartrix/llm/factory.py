@@ -31,7 +31,7 @@ warnings.filterwarnings("ignore", message=r"Found .* in available_models, but ty
 
 HF_ROUTER_URL = "https://router.huggingface.co/v1"
 
-Role = Literal["main", "judge"]
+Role = Literal["main", "judge", "router"]
 
 
 class ProviderConfigError(RuntimeError):
@@ -79,7 +79,7 @@ def _build_chat_model(provider: str, model: str, **kwargs: Any) -> BaseChatModel
 def get_chat_model(role: Role = "main", **kwargs: Any) -> BaseChatModel:
     """The primary model for a role. ``kwargs`` (temperature, max_tokens, ...) are passed through."""
     cfg = settings.llm
-    model = cfg.effective_judge_model if role == "judge" else cfg.model
+    model = {"judge": cfg.effective_judge_model, "router": cfg.effective_router_model}.get(role, cfg.model)
     logger.info("Using LLM", extra={"role": role, "provider": cfg.provider, "model": model})
     return _build_chat_model(cfg.provider, model, **kwargs)
 

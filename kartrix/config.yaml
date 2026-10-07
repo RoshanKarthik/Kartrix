@@ -20,6 +20,7 @@ llm:
   provider: nvidia              # nvidia | huggingface | openai | anthropic
   model: nvidia/nemotron-3-super-120b-a12b
   judge_model: openai/gpt-oss-20b   # cheaper model used only for LLM-as-judge
+  router_model: openai/gpt-oss-20b  # cheap model that routes each request (chat / question / change)
   timeout: 90                   # seconds per request
   retry:                        # transient errors only (timeouts, 429, 5xx)
     max_retries: 2

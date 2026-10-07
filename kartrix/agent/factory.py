@@ -45,9 +45,9 @@ def agent_middleware(approval: ApprovalMiddleware | None, **model_kwargs: Any) -
     ]
 
 
-def build_agent(checkpointer, mcp_tools: list | None = None):
-    """Create the chat agent. It is rebuilt only when MCP servers connect/disconnect or skills
-    are trusted, so the system prompt stays identical between those events (prompt caching)."""
+def build_single_agent(checkpointer, mcp_tools: list | None = None):
+    """The single-loop agent (before 3.1): one ReAct loop with every tool. Kept for comparison in the evals
+    (``agents.architecture: single``)."""
     llm = get_llm()
 
     full_prompt = SYSTEM_PROMPT
@@ -62,3 +62,22 @@ def build_agent(checkpointer, mcp_tools: list | None = None):
         checkpointer=checkpointer,
         middleware=agent_middleware(ApprovalMiddleware()),
     )
+
+
+def build_agent(checkpointer, mcp_tools: list | None = None):
+    """Create the chat agent: the multi-agent LangGraph graph (``kartrix.agent.graph``). It is rebuilt only
+    when MCP servers connect/disconnect or skills are trusted, so every system prompt stays identical between
+    those events (prompt caching)."""
+    from kartrix.agent.graph import AgentGraph
+    from kartrix.config import settings
+
+    if settings.agents.architecture == "single":
+        return build_single_agent(checkpointer, mcp_tools)
+    graph = AgentGraph(
+        middleware=lambda approval: agent_middleware(approval),
+        approval=ApprovalMiddleware,
+        mcp_tools=mcp_tools,
+        skills=[load_skill],
+        skills_prompt=build_skills_prompt(),
+    )
+    return graph.compile(checkpointer)

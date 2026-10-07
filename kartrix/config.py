@@ -78,6 +78,7 @@ class LLMSettings(_Section):
     provider: LLMProvider = "nvidia"
     model: str = "nvidia/nemotron-3-super-120b-a12b"
     judge_model: str | None = None  # cheaper model for LLM-as-judge; falls back to `model`
+    router_model: str | None = None  # cheap model that routes each request; falls back to the judge model
     timeout: float = Field(90.0, gt=0)  # per request; free-tier models can hang
     retry: RetrySettings = RetrySettings()
     # Tried in order when the primary still fails after its retries; [] disables fallback.
@@ -92,6 +93,10 @@ class LLMSettings(_Section):
     def effective_judge_model(self) -> str:
         return self.judge_model or self.model
 
+    @property
+    def effective_router_model(self) -> str:
+        return self.router_model or self.effective_judge_model
+
 
 class SkillsSettings(_Section):
     skills_dir: str = ".kartrix/skills"
@@ -101,6 +106,10 @@ class MemorySettings(_Section):
     session_file: str = ".kartrix/current_session"  # id of the active session (thread)
     summarize_at_tokens: int = Field(4000, gt=0)
     keep_last_messages: int = Field(20, gt=0)
+    # long-term memory (kartrix.memory.long_term)
+    recall_k: int = Field(5, gt=0)
+    min_similarity: float = Field(0.3, ge=0.0, le=1.0)
+    dedupe_similarity: float = Field(0.92, ge=0.0, le=1.0)  # a new memory this close replaces the old one
 
 
 class IndexSettings(_Section):
@@ -323,6 +332,14 @@ def load_yaml_strict(path: Path) -> dict[str, Any]:
     return data
 
 
+class AgentsSettings(_Section):
+    """The multi-agent chat graph (kartrix.agent.graph)."""
+
+    # multi: router + explorer/coder/reviewer subagents (kartrix.agent.graph); single: one ReAct loop
+    architecture: Literal["multi", "single"] = "multi"
+    max_review_rounds: int = Field(2, ge=1, le=5)  # coder → reviewer rounds before answering anyway
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="KARTRIX_",
@@ -333,6 +350,7 @@ class Settings(BaseSettings):
     embeddings: EmbeddingsSettings = EmbeddingsSettings()
     semantic_cache: SemanticCacheSettings = SemanticCacheSettings()
     llm: LLMSettings = LLMSettings()
+    agents: AgentsSettings = AgentsSettings()
     skills: SkillsSettings = SkillsSettings()
     memory: MemorySettings = MemorySettings()
     index: IndexSettings = IndexSettings()
