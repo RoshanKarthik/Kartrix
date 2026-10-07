@@ -12,7 +12,7 @@ from kartrix.observability.logger import get_logger
 from kartrix.security.audit import note
 from kartrix.security.command_policy import Decision, evaluate
 from kartrix.security.environment import scrubbed_env
-from kartrix.security.permissions import get_mode, has_approval_handler, request_approval
+from kartrix.security.permissions import get_mode, request_approval
 from kartrix.tools.process_runner import ProcessResult, run_process
 
 logger = get_logger(__name__)
@@ -42,9 +42,9 @@ def format_result(result: ProcessResult, timeout: float) -> str:
 
 
 def _not_approved(decision: Decision) -> str:
+    """Reached only when nobody could be asked (no approval middleware, e.g. no terminal);
+    calls the user declined never get here — the approval middleware answers for them."""
     why = f"{decision.category}: {decision.reason}"
-    if has_approval_handler():
-        return f"Error: the user declined this command ({why})"
     mode = get_mode()
     switch = "" if mode == "auto" else ", switch mode with /mode auto"
     return (
@@ -69,8 +69,10 @@ def run_command(command: str, directory: str = ".") -> str:
     note(policy=decision.action, category=str(decision.category), reason=decision.reason, mode=get_mode())
     if decision.action == "deny":
         return f"Error: command denied — {decision.reason}"
-    if decision.action == "ask" and not request_approval(decision):
-        return _not_approved(decision)
+    if decision.action == "ask":
+        if not request_approval(decision):
+            return _not_approved(decision)
+        note(approved_by="user")
 
     timeout = settings.permissions.command_timeout
     try:

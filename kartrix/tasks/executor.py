@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 
 from langchain.agents import create_agent
+from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel
 
 from kartrix.llm.factory import get_chat_model, get_model_middleware
 from kartrix.observability.logger import get_logger
+from kartrix.security.approvals import (
+    ApprovalDecision,
+    ApprovalMiddleware,
+    ApprovalRequest,
+    Approver,
+    stream_agent,
+)
 from kartrix.security.audit import AuditMiddleware
 from kartrix.tools.filesystem_tools import READ_TOOLS, WRITE_TOOLS, edit_file, write_file
 from kartrix.tools.terminal_tools import run_command
@@ -123,18 +132,25 @@ AGENT OUTPUT:
     return result["structured_response"]
 
 
+async def _no_approver(requests: list[ApprovalRequest]) -> list[ApprovalDecision]:
+    raise RuntimeError("approval requested without an approver")  # unreachable: no ApprovalMiddleware then
+
+
 # ------------------------------------------------------------------
 # Main entry point — called by orchestrator._execute()
 # ------------------------------------------------------------------
 
 
-async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None) -> str:
+async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None, approver: Approver | None = None) -> str:
     """
     Build a fresh agent for a single task and invoke it.
 
     After the agent returns, an LLM judge verifies the output against
     acceptance_criteria. If it fails (score < 6), raises ValueError so
     the orchestrator's existing retry logic kicks in automatically.
+
+    With an ``approver``, commands that need approval pause the agent until it answers; without
+    one (no one to ask) they are refused and the agent is told why.
     """
     llm = get_chat_model("main", temperature=0, max_tokens=3000)
 
@@ -143,12 +159,20 @@ async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None) -
 
     logger.info(f"Building agent for task {task['id']} (type={task['task_type']}, tools={[t.name for t in tools]})")
 
+    middleware = [*get_model_middleware(temperature=0, max_tokens=3000), AuditMiddleware()]
+    if approver is not None:
+        middleware.insert(-1, ApprovalMiddleware())
+    # Interrupts need a checkpointer; a task's run is not resumed across restarts (recovery
+    # re-runs crashed tasks), so memory is enough. The thread id is not a UUID on purpose:
+    # audit rows then take the session id from the orchestrator's audit scope.
     agent = create_agent(
         llm,
         tools=tools,
         system_prompt=system_prompt,
-        middleware=[*get_model_middleware(temperature=0, max_tokens=3000), AuditMiddleware()],
+        middleware=middleware,
+        checkpointer=InMemorySaver(),
     )
+    config = {"configurable": {"thread_id": f"task-{task['id']}-{uuid.uuid4().hex[:8]}"}}
 
     # The project directory may be empty on first run — tell the agent to create files
     # directly rather than spending turns exploring an empty directory.
@@ -160,9 +184,8 @@ async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None) -
     )
 
     final_state: dict[str, Any] = {"messages": []}  # stays empty if the stream yields nothing
-    async for step in agent.astream(
-        {"messages": [{"role": "user", "content": user_message}]},
-        stream_mode="values",
+    async for step in stream_agent(
+        agent, {"messages": [{"role": "user", "content": user_message}]}, config, approver or _no_approver
     ):
         last_msg = step["messages"][-1]
         tool_calls = getattr(last_msg, "tool_calls", None)

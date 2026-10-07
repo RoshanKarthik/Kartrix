@@ -7,6 +7,7 @@ from rich.console import Console
 
 from kartrix.context.indexers.pg_index import index_repo
 from kartrix.observability.logger import get_logger
+from kartrix.security.approvals import Approver
 from kartrix.security.audit import audit_scope
 from kartrix.tasks.approval import present_plan_for_approval
 from kartrix.tasks.executor import run_subtask_agent
@@ -26,9 +27,17 @@ class TaskOrchestrator:
     Serial by default (max_concurrent=1) for cost control and determinism.
     """
 
-    def __init__(self, store: TaskStore, max_concurrent: int = 1) -> None:
+    def __init__(
+        self,
+        store: TaskStore,
+        max_concurrent: int = 1,
+        approver: Approver | None = None,
+        session_id: str | None = None,
+    ) -> None:
         self.store = store
         self.max_concurrent = max_concurrent
+        self.approver = approver
+        self.session_id = session_id
 
     async def run(self, project_id: str) -> None:
         """
@@ -91,8 +100,8 @@ class TaskOrchestrator:
             # Fetch what dependency tasks actually produced and inject into the agent.
             dep_outputs = await self.store.get_dep_results(project_id, task["depends_on"])
 
-            with audit_scope(project_id=project_id, task_key=task["id"]):
-                result = await run_subtask_agent(task, dep_outputs=dep_outputs)
+            with audit_scope(session_id=self.session_id, project_id=project_id, task_key=task["id"]):
+                result = await run_subtask_agent(task, dep_outputs=dep_outputs, approver=self.approver)
             await self.store.complete_task(project_id, task["id"], result)
             console.print(f"[green]✅ Completed:[/green] [{task['id']}] {task['title']}")
 
@@ -103,12 +112,14 @@ class TaskOrchestrator:
             logger.error(f"Task {task['id']} failed: {error_msg}")
 
 
-async def handle_plan_command(goal: str, session_id: str | None = None) -> None:
+async def handle_plan_command(goal: str, session_id: str | None = None, approver: Approver | None = None) -> None:
     """
     Full /plan flow — entry point called by main.py.
 
       1. Check DB for an unfinished (approved/running) project of this repo → resume + recover
       2. Otherwise: plan → human approval loop → persist → execute
+
+    ``approver`` answers the tasks' command approvals; without one they are refused.
     """
     store = TaskStore()
     recover = RecoveryManager(store)
@@ -135,7 +146,7 @@ async def handle_plan_command(goal: str, session_id: str | None = None) -> None:
         project_id = await store.create_project(goal, approved_plan, repo_path, session_id)
         console.print(f"\n[dim]Project {project_id} saved.[/dim]")
 
-    orchestrator = TaskOrchestrator(store, max_concurrent=1)
+    orchestrator = TaskOrchestrator(store, max_concurrent=1, approver=approver, session_id=session_id)
     await orchestrator.run(project_id)
 
     # Re-index the project directory so /ask follow-up questions can find

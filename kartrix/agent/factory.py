@@ -4,6 +4,7 @@ from kartrix.agent.tools import search_codebase
 from kartrix.llm.factory import get_llm, get_model_middleware
 from kartrix.mcp.mcp_client import get_mcp_tools
 from kartrix.observability.logger import get_logger
+from kartrix.security.approvals import ApprovalMiddleware
 from kartrix.security.audit import AuditMiddleware
 from kartrix.skills.skill_tools import build_skills_prompt, load_skill
 from kartrix.tools.filesystem_tools import READ_TOOLS, WRITE_TOOLS
@@ -43,5 +44,6 @@ async def build_agent(checkpointer):
         tools=tools,
         system_prompt=full_prompt,
         checkpointer=checkpointer,
-        middleware=[*get_model_middleware(), AuditMiddleware()],
+        # Approval runs outside the audit wrapper, so the audit row shows the command that actually ran.
+        middleware=[*get_model_middleware(), ApprovalMiddleware(), AuditMiddleware()],
     )

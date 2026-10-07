@@ -12,6 +12,7 @@ import pytest
 from kartrix.config import settings
 from kartrix.security import permissions
 from kartrix.security import workspace as ws_mod
+from kartrix.security.command_policy import evaluate
 from kartrix.security.workspace import set_workspace
 from kartrix.tools.filesystem_tools import write_file
 from kartrix.tools.terminal_tools import run_command
@@ -26,7 +27,7 @@ def root(tmp_path: Path) -> Iterator[Path]:
     yield root
     ws_mod._current = previous
     permissions._mode = None
-    permissions._approval_handler = None
+    permissions.clear_session_allowances()
 
 
 def run(command: str, directory: str = ".") -> str:
@@ -93,14 +94,21 @@ def test_denied_and_ask_messages(root: Path) -> None:
     assert "needs the user's approval" in out and "/mode auto" in out
 
 
-def test_approval_handler_is_consulted(root: Path) -> None:
+def test_user_approval_and_session_allowance(root: Path) -> None:
     script(root, "x.py", "print('ran')")
-    seen = []
-    permissions.set_approval_handler(lambda d: seen.append(d.argv) or True)
+    with permissions.user_approved():  # what the approval middleware sets for an approved call
+        assert run("python x.py").strip() == "ran"
+    assert "needs the user's approval" in run("python x.py")  # only that call
+    with permissions.user_approved():
+        assert run("sudo ls").startswith("Error: command denied")  # approval never overrides deny
+
+    permissions.allow_for_session(evaluate("python x.py"))
     assert run("python x.py").strip() == "ran"
-    assert seen == [["python", "x.py"]]
-    permissions.set_approval_handler(lambda d: False)
-    assert "declined" in run("python x.py")
+    assert "needs the user's approval" in run("python x.py -v")  # exact command only
+    (root / "sub").mkdir()
+    assert "needs the user's approval" in run("python ../x.py", "sub")  # same script, other directory
+    permissions.clear_session_allowances()
+    assert "needs the user's approval" in run("python x.py")
 
 
 def test_read_only_mode_blocks_file_changes(root: Path) -> None:

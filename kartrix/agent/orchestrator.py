@@ -1,5 +1,6 @@
 from kartrix.config import settings
 from kartrix.observability.logger import get_logger
+from kartrix.security.approvals import Approver, run_agent
 
 logger = get_logger(__name__)
 
@@ -8,6 +9,7 @@ async def handle_query(
     agent,
     question: str,
     thread_id: str,
+    approver: Approver,
     semantic_cache=None,
     cache_domain: str | None = None,
 ) -> str:
@@ -17,6 +19,7 @@ async def handle_query(
     stored answer directly and skips the agent (and every tool call it would
     have made, including search_codebase) entirely. A miss falls through to
     the normal agent call and stores the fresh answer for next time.
+    Commands that need approval pause the agent until ``approver`` answers.
     """
     logger.info(f"Handling query for session {thread_id}: {question}")
     model = settings.llm.model
@@ -33,7 +36,7 @@ async def handle_query(
 
     agent_config = {"configurable": {"thread_id": thread_id}}
     try:
-        response = await agent.ainvoke({"messages": [{"role": "user", "content": question}]}, agent_config)
+        response = await run_agent(agent, {"messages": [{"role": "user", "content": question}]}, agent_config, approver)
         answer = response["messages"][-1].content
     except Exception as e:
         logger.error(f"Agent error: {e}")

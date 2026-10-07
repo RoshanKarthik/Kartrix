@@ -346,8 +346,11 @@ def _user_rule(argv: list[str]) -> Action | None:
 # ── entry point ───────────────────────────────────────────────────────
 
 
-def evaluate(command: str, directory: str = ".", mode: Mode | None = None) -> Decision:
-    """Decide what to do with ``command`` run in ``directory`` (relative to the workspace)."""
+def evaluate(command: str, directory: str = ".", mode: Mode | None = None, *, log: bool = True) -> Decision:
+    """Decide what to do with ``command`` run in ``directory`` (relative to the workspace).
+
+    Denials are logged at WARNING, other decisions at INFO ("ask" is a normal path now that the
+    user is asked); ``log=False`` for checks that don't act on the decision (approval pre-check)."""
     mode = mode or get_mode()
     ws = get_workspace()
     argv: list[str] = []
@@ -383,8 +386,10 @@ def evaluate(command: str, directory: str = ".", mode: Mode | None = None) -> De
     except _Deny as e:
         decision = Decision(_DENY, e.category, str(e), command, argv, cwd)
 
-    log = logger.info if decision.action == _ALLOW else logger.warning
-    log(
+    if not log:
+        return decision
+    emit = logger.warning if decision.action == _DENY else logger.info
+    emit(
         "Command policy decision",
         extra={
             "action": decision.action,

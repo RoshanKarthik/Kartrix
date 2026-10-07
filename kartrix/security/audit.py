@@ -52,6 +52,18 @@ def audit_scope(**ids: Any) -> Iterator[None]:
         _scope.reset(token)
 
 
+def scope_ids() -> dict[str, Any]:
+    """The ids set by the enclosing :func:`audit_scope` calls."""
+    return dict(_scope.get() or {})
+
+
+def as_uuid(value: Any) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(value)) if value else None
+    except ValueError:
+        return None
+
+
 def note(**fields: Any) -> None:
     """Add details to the audit row of the tool call currently running (no-op outside one).
 
@@ -62,14 +74,7 @@ def note(**fields: Any) -> None:
         holder.update(fields)
 
 
-def _as_uuid(value: Any) -> uuid.UUID | None:
-    try:
-        return uuid.UUID(str(value)) if value else None
-    except ValueError:
-        return None
-
-
-def _redact_json(value: Any) -> Any:
+def redact_json(value: Any) -> Any:
     return json.loads(redact(json.dumps(value, default=str, ensure_ascii=False)))
 
 
@@ -86,14 +91,14 @@ async def record(
     scope = _scope.get() or {}
     extra = {k: v for k, v in scope.items() if k not in ("session_id", "project_id", "task_id")}
     row: dict[str, Any] = {
-        "session_id": _as_uuid(session_id or scope.get("session_id")),
-        "project_id": _as_uuid(scope.get("project_id")),
-        "task_id": _as_uuid(scope.get("task_id")),
+        "session_id": as_uuid(session_id) or as_uuid(scope.get("session_id")),
+        "project_id": as_uuid(scope.get("project_id")),
+        "task_id": as_uuid(scope.get("task_id")),
         "actor": actor,
         "action": action[:100],
         "target": redact(target)[:1000] if target else None,
         "outcome": outcome[:32],
-        "details": _redact_json({**extra, **(details or {})}),
+        "details": redact_json({**extra, **(details or {})}),
     }
     try:
         async with session_scope() as s:
@@ -104,7 +109,7 @@ async def record(
 
 async def recent(session_id: str, limit: int = 20) -> list[AuditLog]:
     """The newest audit rows of a session, newest first."""
-    sid = _as_uuid(session_id)
+    sid = as_uuid(session_id)
     async with session_scope() as s:
         result = await s.execute(
             select(AuditLog).where(AuditLog.session_id == sid).order_by(AuditLog.id.desc()).limit(limit)

@@ -23,13 +23,16 @@ from kartrix.memory.session import (
 from kartrix.memory.short_term import get_checkpointer
 from kartrix.observability.logger import get_logger
 from kartrix.security import audit
-from kartrix.security.permissions import MODES, get_mode, set_mode
+from kartrix.security.approval_prompt import ConsoleApprover
+from kartrix.security.approvals import resume_pending
+from kartrix.security.permissions import MODES, clear_session_allowances, get_mode, set_mode
 from kartrix.security.workspace import set_workspace
 from kartrix.tasks.orchestrator import handle_plan_command
 from kartrix.tasks.status import show_task_status
 
 console = Console()
 logger = get_logger(__name__)
+approver = ConsoleApprover(console)
 
 
 async def update_index() -> None:
@@ -64,6 +67,23 @@ async def show_audit(session_id: str, arg: str) -> None:
     console.print(table)
 
 
+async def finish_pending_approval(agent, session_id: str) -> None:
+    """A session closed while asking for approval is still paused there: ask again and finish it."""
+    config = {"configurable": {"thread_id": session_id}}
+    try:
+        state = await agent.aget_state(config)
+        if not state.interrupts:
+            return
+        console.print("[yellow]This session stopped while waiting for your approval:[/yellow]")
+        result = await resume_pending(agent, config, approver)
+    except Exception as e:
+        logger.error(f"Could not resume the pending approval: {e}")
+        console.print(f"[red]Could not resume the pending approval: {e}[/red]")
+        return
+    if result and result.get("messages"):
+        console.print(result["messages"][-1].content)
+
+
 async def initialize(checkpointer):
     """Bootstrap LLM, embedder, index, watcher, MCP tools, cache, and session before the REPL starts."""
     # Built once up front so a missing API key or bad provider config fails at startup.
@@ -96,6 +116,7 @@ async def initialize(checkpointer):
     await record_session(session_id, repo_path)
     console.print(f"[dim]Session: {session_id}[/dim]")
     console.print("[green]✓ Ready[/green]\n")
+    await finish_pending_approval(agent, session_id)
     return agent, session_id, observer, semantic_cache, cache_domain
 
 
@@ -125,6 +146,7 @@ async def _run_async():
                     agent,
                     question,
                     session_id,
+                    approver,
                     semantic_cache=semantic_cache,
                     cache_domain=cache_domain,
                 )
@@ -138,17 +160,20 @@ async def _run_async():
                 console.print("[green]✓ Re-index complete.[/green]")
             elif user_input == "/new_session":
                 session_id = new_session()
+                clear_session_allowances()
                 await record_session(session_id, str(Path.cwd()))
                 console.print(f"[green]New session started: {session_id}[/green]")
             elif user_input.startswith("/switch "):
                 target = user_input.removeprefix("/switch ").strip()
                 try:
                     session_id = switch_session(target)
+                    clear_session_allowances()
                     await record_session(session_id, str(Path.cwd()))
                 except InvalidSessionIdError:
                     console.print("[red]Invalid session id — expected a UUID like the one shown by /session.[/red]")
                 else:
                     console.print(f"[green]Switched to session: {session_id}[/green]")
+                    await finish_pending_approval(agent, session_id)
             elif user_input == "/session":
                 console.print(f"[dim]Current session: {session_id}[/dim]")
             elif user_input == "/show_index":
@@ -157,7 +182,7 @@ async def _run_async():
             elif user_input.startswith("/plan "):
                 goal = user_input.removeprefix("/plan ").strip()
                 logger.info(f"Plan command received: {goal}")
-                await handle_plan_command(goal, session_id)
+                await handle_plan_command(goal, session_id, approver)
             elif user_input == "/task_status":
                 await show_task_status()
             elif user_input == "/audit" or user_input.startswith("/audit "):

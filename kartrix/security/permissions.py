@@ -7,13 +7,18 @@
                   registries and recoverable git changes; network, destructive and unknown
                   commands still need approval.
 
-The hard deny list applies in every mode. Until approvals exist (step 1.4) there is no
-approval handler, so "ask" means "not run".
+The hard deny list applies in every mode. An "ask" decision runs only when the user approved
+that exact tool call (``kartrix.security.approvals`` asks before the tool runs and marks the
+call with :func:`user_approved`) or allowed the same command for the rest of the session.
+Agents without the approval middleware (or no one to ask) treat "ask" as "not run".
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import shlex
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Literal, cast, get_args
 
 from kartrix.config import settings
@@ -27,10 +32,9 @@ logger = get_logger(__name__)
 Mode = Literal["read_only", "default", "auto"]
 MODES: tuple[str, ...] = get_args(Mode)
 
-ApprovalHandler = Callable[["Decision"], bool]
-
 _mode: Mode | None = None
-_approval_handler: ApprovalHandler | None = None
+_user_approved: ContextVar[bool] = ContextVar("kartrix_user_approved", default=False)
+_session_allowed: set[tuple[str, str]] = set()  # (command line, directory) the user allowed for this session
 
 
 class PermissionDeniedError(Exception):
@@ -56,16 +60,38 @@ def ensure_writes_allowed() -> None:
         raise PermissionDeniedError("read-only mode: file changes are disabled (the user can switch with /mode)")
 
 
-def set_approval_handler(handler: ApprovalHandler | None) -> None:
-    """Install the function that asks the user about an "ask" decision (step 1.4)."""
-    global _approval_handler
-    _approval_handler = handler
+@contextmanager
+def user_approved() -> Iterator[None]:
+    """Mark the tool call running inside as approved by the user (set by the approval middleware).
+
+    Sync tools run in a worker thread with a copy of the context, so they see the mark too."""
+    token = _user_approved.set(True)
+    try:
+        yield
+    finally:
+        _user_approved.reset(token)
 
 
-def has_approval_handler() -> bool:
-    return _approval_handler is not None
+def approval_key(decision: Decision) -> tuple[str, str]:
+    """What "allow for this session" remembers: the exact command line and directory."""
+    return shlex.join(decision.argv), str(decision.cwd)
+
+
+def allow_for_session(decision: Decision) -> None:
+    _session_allowed.add(approval_key(decision))
+    logger.info("Command allowed for the session", extra={"command": decision.argv, "cwd": str(decision.cwd)})
+
+
+def clear_session_allowances() -> None:
+    """Forget "allow for this session" choices (new or switched session)."""
+    _session_allowed.clear()
+
+
+def needs_approval(decision: Decision) -> bool:
+    """An "ask" decision the user hasn't already allowed for this session."""
+    return decision.action == "ask" and approval_key(decision) not in _session_allowed
 
 
 def request_approval(decision: Decision) -> bool:
-    """True if the user approved; False if declined or nobody can be asked."""
-    return _approval_handler(decision) if _approval_handler is not None else False
+    """True if the user approved this call (or this command for the session)."""
+    return _user_approved.get() or not needs_approval(decision)
