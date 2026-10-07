@@ -112,11 +112,11 @@ def _sandbox(action: str) -> int:
     if action == "reset":
         if sys.platform != "win32":
             print("Nothing to reset: only the Windows sandbox changes folder permissions.")
-            return 0
-        from kartrix.sandbox.windows import AppContainerBackend
+        else:
+            from kartrix.sandbox.windows import AppContainerBackend
 
-        cleaned = AppContainerBackend().reset()
-        print(f"Removed the sandbox's access to {len(cleaned)} path(s); it is given again on the next command.")
+            cleaned = AppContainerBackend().reset()
+            print(f"Removed the sandbox's access to {len(cleaned)} path(s); it is given again on the next command.")
         return 0
     if current.backend is None:
         return 1

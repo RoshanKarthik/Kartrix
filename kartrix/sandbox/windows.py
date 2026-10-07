@@ -48,7 +48,7 @@ import zipfile
 from collections.abc import Iterator
 from ctypes import wintypes
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from kartrix.config import settings
 from kartrix.observability.logger import get_logger
@@ -85,6 +85,11 @@ if sys.platform == "win32":
     _userenv = ctypes.WinDLL("userenv")
     _advapi = ctypes.WinDLL("advapi32", use_last_error=True)
     _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _win_error = ctypes.WinError
+    _last_error = ctypes.get_last_error
+    import msvcrt as _msvcrt
+else:  # imported on other platforms for the cross-platform helpers; the Win32 calls never run there
+    _userenv = _advapi = _k32 = _win_error = _last_error = _msvcrt = cast(Any, None)
 
 
 class _SidAndAttributes(ctypes.Structure):
@@ -171,13 +176,13 @@ class Sid:
     def from_string(cls, text: str) -> Sid:
         ptr = ctypes.c_void_p()
         if not _advapi.ConvertStringSidToSidW(ctypes.c_wchar_p(text), ctypes.byref(ptr)):
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise _win_error(_last_error())
         return cls(ptr, "local")
 
     def __str__(self) -> str:
         text = ctypes.c_wchar_p()
         if not _advapi.ConvertSidToStringSidW(self.ptr, ctypes.byref(text)):
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise _win_error(_last_error())
         try:
             return str(text.value)
         finally:
@@ -245,19 +250,19 @@ def set_access(path: Path, sid: Sid, mask: int, mode: int, inherit: bool = True)
         ctypes.c_wchar_p(str(path)), _SE_FILE_OBJECT, _DACL, None, None, ctypes.byref(old), None, ctypes.byref(sd)
     )
     if err:
-        raise ctypes.WinError(err)
+        raise _win_error(err)
     try:
         ea = _ExplicitAccess(mask, mode, _INHERIT if inherit and path.is_dir() else 0, _Trustee(None, 0, 0, 0, sid.ptr))
         new = ctypes.c_void_p()
         err = _advapi.SetEntriesInAclW(1, ctypes.byref(ea), old, ctypes.byref(new))
         if err:
-            raise ctypes.WinError(err)
+            raise _win_error(err)
         try:
             err = _advapi.SetNamedSecurityInfoW(
                 ctypes.c_wchar_p(str(path)), _SE_FILE_OBJECT, _DACL, None, None, new, None
             )
             if err:
-                raise ctypes.WinError(err)
+                raise _win_error(err)
         finally:
             _k32.LocalFree(new)
     finally:
@@ -274,16 +279,16 @@ def set_access_here(path: Path, sid: Sid, mask: int, mode: int) -> None:
         ctypes.c_wchar_p(str(path)), _SE_FILE_OBJECT, _DACL, None, None, ctypes.byref(old), None, ctypes.byref(sd)
     )
     if err:
-        raise ctypes.WinError(err)
+        raise _win_error(err)
     try:
         control, revision = wintypes.WORD(), wintypes.DWORD()
         if not _advapi.GetSecurityDescriptorControl(sd, ctypes.byref(control), ctypes.byref(revision)):
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise _win_error(_last_error())
         ea = _ExplicitAccess(mask, mode, 0, _Trustee(None, 0, 0, 0, sid.ptr))
         new = ctypes.c_void_p()
         err = _advapi.SetEntriesInAclW(1, ctypes.byref(ea), old, ctypes.byref(new))
         if err:
-            raise ctypes.WinError(err)
+            raise _win_error(err)
         try:
             absolute = ctypes.create_string_buffer(64)  # SECURITY_DESCRIPTOR (40 bytes on x64)
             flags = _SE_DACL_AUTO_INHERITED | _SE_DACL_PROTECTED
@@ -294,7 +299,7 @@ def set_access_here(path: Path, sid: Sid, mask: int, mode: int) -> None:
                 and _advapi.SetFileSecurityW(ctypes.c_wchar_p(str(path)), _DACL, absolute)
             )
             if not ok:
-                raise ctypes.WinError(ctypes.get_last_error())
+                raise _win_error(_last_error())
         finally:
             _k32.LocalFree(new)
     finally:
@@ -321,7 +326,6 @@ def acl_lock(timeout: float = 120.0) -> Iterator[None]:
     read-modify-write of the whole list: two processes granting their containers access to the same
     folder (a shared venv, a parent folder) at the same moment lost one entry, and that container could
     no longer start Python ("No pyvenv.cfg file") while the grant store said it had access."""
-    import msvcrt
 
     with _thread_lock:
         path = user_data_dir() / "sandbox_grants.lock"
@@ -331,7 +335,7 @@ def acl_lock(timeout: float = 120.0) -> Iterator[None]:
             while True:
                 try:
                     fh.seek(0)
-                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    _msvcrt.locking(fh.fileno(), _msvcrt.LK_NBLCK, 1)
                     break
                 except OSError:
                     if time.monotonic() > deadline:
@@ -341,7 +345,7 @@ def acl_lock(timeout: float = 120.0) -> Iterator[None]:
                 yield
             finally:
                 fh.seek(0)
-                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                _msvcrt.locking(fh.fileno(), _msvcrt.LK_UNLCK, 1)
 
 
 class GrantStore:
@@ -579,7 +583,7 @@ class AppContainerPopen(subprocess.Popen[bytes]):
         _k32.InitializeProcThreadAttributeList(None, 2, 0, ctypes.byref(size))
         attrs = ctypes.create_string_buffer(size.value)
         if not _k32.InitializeProcThreadAttributeList(attrs, 2, 0, ctypes.byref(size)):
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise _win_error(_last_error())
         try:
             for attr, value, length in (
                 (_ATTR_SECURITY_CAPABILITIES, ctypes.byref(sc), ctypes.sizeof(sc)),
@@ -588,7 +592,7 @@ class AppContainerPopen(subprocess.Popen[bytes]):
                 if not _k32.UpdateProcThreadAttribute(
                     attrs, 0, ctypes.c_size_t(attr), value, ctypes.c_size_t(length), None, None
                 ):
-                    raise ctypes.WinError(ctypes.get_last_error())
+                    raise _win_error(_last_error())
             si = _StartupInfoEx()
             si.StartupInfo.cb = ctypes.sizeof(_StartupInfoEx)
             si.StartupInfo.dwFlags = _STARTF_USESTDHANDLES
@@ -606,7 +610,7 @@ class AppContainerPopen(subprocess.Popen[bytes]):
                 ctypes.byref(si), ctypes.byref(pi),
             )  # fmt: skip
             if not ok:
-                raise ctypes.WinError(ctypes.get_last_error())
+                raise _win_error(_last_error())
             return pi
         finally:
             _k32.DeleteProcThreadAttributeList(attrs)
@@ -671,14 +675,15 @@ class AppContainerBackend(Backend):
     def detect(cls) -> AppContainerBackend:
         if sys.platform != "win32":
             raise SandboxUnavailable("AppContainer exists only on Windows")
-        if sys.getwindowsversion().build < 9200:
-            raise SandboxUnavailable("AppContainer needs Windows 8 or later")
-        try:
-            _bind_prototypes()
-            ensure_profile("kartrix.probe")
-        except (OSError, AttributeError) as e:
-            raise SandboxUnavailable(f"AppContainer profiles can't be created ({e})") from e
-        return cls()
+        else:  # an explicit branch, so type-checking for other platforms skips it instead of flagging it
+            if sys.getwindowsversion().build < 9200:
+                raise SandboxUnavailable("AppContainer needs Windows 8 or later")
+            try:
+                _bind_prototypes()
+                ensure_profile("kartrix.probe")
+            except (OSError, AttributeError) as e:
+                raise SandboxUnavailable(f"AppContainer profiles can't be created ({e})") from e
+            return cls()
 
     def describe(self) -> str:
         return "AppContainer — writes limited to the workspace, network off; installs need approval (then: internet)"
