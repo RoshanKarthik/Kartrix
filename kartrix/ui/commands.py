@@ -265,6 +265,20 @@ async def handle_checkpoint_command(command: str, arg: str, session_id: str) -> 
     )
 
 
+def show_trace(ref: str | None) -> None:
+    """/trace [run|last]: the recent runs, or one run's timeline (kartrix.observability.tracing)."""
+    from kartrix.observability import tracing
+
+    if ref is None:
+        console.print(tracing.render_list(tracing.list_traces()), markup=False, highlight=False)
+        return
+    path = tracing.find(ref)
+    if path is None:
+        console.print(f"[yellow]No trace matches {escape(ref)!r}.[/yellow]")
+        return
+    console.print(tracing.render(tracing.summarize(tracing.load(path))), markup=False, highlight=False)
+
+
 def show_budget(last_run: Budget | None) -> None:
     """/budget: the limits and what the last run used."""
     cfg = settings.budgets
@@ -306,6 +320,7 @@ def print_help() -> None:
     console.print("  [bold]/redo \\[force][/bold]            — re-apply what /undo reverted")
     console.print("  [bold]/checkpoints[/bold]             — list undo points")
     console.print("  [bold]/budget[/bold]                  — budget limits and the last run's usage")
+    console.print("  [bold]/trace \\[run|last][/bold]        — recent runs, or one run's timeline")
     console.print("  [bold]/memory \\[add \\[--user] <text>|forget <id>][/bold] — long-term memory")
     console.print("  [dim]Ctrl+C stops a running turn or plan (twice quits); `kartrix stop` stops all runs[/dim]")
 
@@ -378,6 +393,8 @@ async def dispatch(core: CoreSession, user_input: str) -> None:
         await handle_checkpoint_command(command, arg.strip(), core.session_id)
     elif user_input == "/budget":
         show_budget(core.last_budget)
+    elif user_input == "/trace" or user_input.startswith("/trace "):
+        show_trace(user_input.removeprefix("/trace").strip() or None)
     elif user_input == "/memory" or user_input.startswith("/memory "):
         await handle_memory_command(user_input.removeprefix("/memory").strip(), core.session_id)
     elif user_input == "/skills" or user_input.startswith("/skills "):

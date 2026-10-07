@@ -35,6 +35,7 @@ from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.types import Command
 
 from kartrix.config import BudgetLimits, ModelPrice, settings
+from kartrix.core.events import ModelCall, emit
 from kartrix.observability.logger import get_logger
 from kartrix.security import audit
 from kartrix.security.kill_switch import STOP_COMMAND_REASON, stop_file, stop_requested_at
@@ -293,17 +294,29 @@ def _response_messages(response: Any) -> list[BaseMessage]:
     return list(getattr(inner, "result", []) or [])
 
 
-def _account(budget: Budget, request: ModelRequest, response: Any) -> None:
+def _account(request: ModelRequest, response: Any, started: float) -> None:
+    """Count the call against the run's budget (if any) and emit it for the trace."""
     ai = next((m for m in _response_messages(response) if isinstance(m, AIMessage)), None)
     usage = getattr(ai, "usage_metadata", None) if ai is not None else None
     model = _model_name(request.model)
     if usage and (usage.get("input_tokens") or usage.get("output_tokens")):
-        budget.add_model_call(model, int(usage.get("input_tokens", 0)), int(usage.get("output_tokens", 0)))
-        return
-    prompt: list[BaseMessage] = [request.system_message] if request.system_message else []
-    prompt += list(request.messages)
-    out = count_tokens_approximately([ai]) if ai is not None else 0
-    budget.add_model_call(model, count_tokens_approximately(prompt), out, estimated=True)
+        tokens_in, tokens_out, estimated = int(usage.get("input_tokens", 0)), int(usage.get("output_tokens", 0)), False
+    else:
+        prompt: list[BaseMessage] = [request.system_message] if request.system_message else []
+        prompt += list(request.messages)
+        tokens_in, tokens_out, estimated = (
+            count_tokens_approximately(prompt), count_tokens_approximately([ai]) if ai is not None else 0, True
+        )  # fmt: skip
+    if (budget := _current.get()) is not None:
+        budget.add_model_call(model, tokens_in, tokens_out, estimated=estimated)
+    meta = (ai.response_metadata or {}) if ai is not None else {}
+    emit(
+        ModelCall(
+            model=model, input_tokens=tokens_in, output_tokens=tokens_out, estimated=estimated,
+            duration_ms=round((time.perf_counter() - started) * 1000, 1),
+            finish_reason=meta.get("finish_reason") or meta.get("stop_reason"),
+        )
+    )  # fmt: skip
 
 
 def _stopped_message(budget: Budget, reason: str) -> AIMessage:
@@ -316,8 +329,9 @@ def _refusal(request: ToolCallRequest, text: str) -> ToolMessage:
 
 
 class BudgetMiddleware(AgentMiddleware):
-    """Count every model call against the current run's budget and stop the run when it is spent.
-    Does nothing outside a :func:`budget_scope`."""
+    """Count every model call against the current run's budget and stop the run when it is spent
+    (nothing to enforce outside a :func:`budget_scope`). Every model call is also emitted as a
+    :class:`~kartrix.core.events.ModelCall` event for the run's trace."""
 
     def _before(self) -> dict[str, Any] | None:
         budget = _current.get()
@@ -337,15 +351,15 @@ class BudgetMiddleware(AgentMiddleware):
         return self._before()
 
     def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Any]) -> Any:
+        started = time.perf_counter()
         response = handler(request)
-        if (budget := _current.get()) is not None:
-            _account(budget, request, response)
+        _account(request, response, started)
         return response
 
     async def awrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[Any]]) -> Any:
+        started = time.perf_counter()
         response = await handler(request)
-        if (budget := _current.get()) is not None:
-            _account(budget, request, response)
+        _account(request, response, started)
         return response
 
     async def awrap_tool_call(

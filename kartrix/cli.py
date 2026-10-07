@@ -7,6 +7,8 @@
   and exit code — see :mod:`kartrix.headless.runner`.
 - ``kartrix eval rag|agent|all|calibrate|report`` — the agent and RAG eval suites, from a source checkout
   (see :mod:`kartrix.evals.cli`).
+- ``kartrix trace [run]`` — the recent runs, or one run's timeline from its local trace
+  (:mod:`kartrix.observability.tracing`).
 - ``kartrix sandbox [status|check|reset]`` — which sandbox runs commands here (:mod:`kartrix.sandbox`),
   a live check of what it blocks, and (Windows) removing the folder access it was given.
 """
@@ -55,6 +57,15 @@ def main(argv: list[str] | None = None) -> int:
         "what it can and can't do. reset (Windows): remove every folder permission given to Kartrix's sandboxes.",
     )
     sandbox.add_argument("action", nargs="?", choices=["status", "check", "reset"], default="status")
+    trace = commands.add_parser(
+        "trace",
+        help="list recent runs, or show one run's timeline (agents, model calls, tools, tokens)",
+        description="Every run is traced to .kartrix/traces/ in the project. Without an argument: the recent runs. "
+        "With a run id (or a prefix, or 'last'): its timeline, totals per agent and model, and the slowest steps.",
+    )
+    trace.add_argument("run", nargs="?", help="run id, prefix or 'last'")
+    trace.add_argument("--json", action="store_true", help="print the raw JSON-lines trace")
+    trace.add_argument("--stats", action="store_true", help="usage and cost over all traced runs, per model")
     from kartrix.evals.cli import add_parser as add_eval_parser
 
     add_eval_parser(commands)
@@ -66,6 +77,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_headless(args.spec, args.report, args.events, args.quiet)
     if args.command == "sandbox":
         return _sandbox(args.action)
+    if args.command == "trace":
+        from kartrix.observability.tracing import cli as trace_cli
+
+        return trace_cli(args.run, args.json, args.stats)
     if args.command == "eval":
         from kartrix.evals.cli import run_eval
 
