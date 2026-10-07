@@ -234,6 +234,41 @@ class CheckpointSettings(_Section):
     )
 
 
+class SandboxLimits(_Section):
+    memory_mb: int | None = Field(4096, gt=0)  # whole command tree (Windows, Docker); per process elsewhere
+    max_processes: int | None = Field(512, gt=0)  # processes the command may run at once (not on macOS)
+    max_file_mb: int | None = Field(2048, gt=0)  # largest file a command may write (macOS / Linux)
+
+
+class DockerSandboxSettings(_Section):
+    image: str | None = None  # needed for backend: docker — an image with the project's toolchain
+    cpus: float | None = Field(None, gt=0)
+
+
+class SandboxSettings(_Section):
+    """Sandboxed command execution (B8) — see kartrix/sandbox/."""
+
+    # auto: the OS-native sandbox (macOS Seatbelt, Linux bubblewrap or Landlock, Windows AppContainer);
+    # native: the same, but an error if it isn't available; docker: always Docker; none: no sandbox
+    # (every command that runs code then needs approval).
+    backend: Literal["auto", "native", "docker", "none"] = "auto"
+    limits: SandboxLimits = SandboxLimits()
+    # Paths under the home directory that sandboxed commands can never read (credentials, keys).
+    deny_read_home: list[str] = Field(
+        default_factory=lambda: [
+            ".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".config/gcloud", ".config/gh", ".config/git",
+            ".git-credentials", ".netrc", ".npmrc", ".yarnrc", ".yarnrc.yml", ".pypirc", ".password-store",
+            ".local/share/keyrings", "Library/Keychains", ".config/kartrix", ".local/share/kartrix",
+            "Library/Application Support/kartrix", "AppData/Local/kartrix",
+        ]
+    )  # fmt: skip
+    # Extra folders sandboxed commands may read (e.g. a toolchain outside the usual places; Windows
+    # only needs this — elsewhere everything but deny_read_home is readable) or write.
+    extra_read: list[str] = Field(default_factory=list)
+    extra_write: list[str] = Field(default_factory=list)
+    docker: DockerSandboxSettings = DockerSandboxSettings()
+
+
 class RetrievalSettings(_Section):
     mode: Literal["hybrid", "dense", "sparse"] = "hybrid"  # hybrid = pgvector + full-text, fused with RRF
     top_k: int = Field(5, gt=0)
@@ -306,6 +341,7 @@ class Settings(BaseSettings):
     permissions: PermissionsSettings = PermissionsSettings()
     budgets: BudgetSettings = BudgetSettings()
     checkpoints: CheckpointSettings = CheckpointSettings()
+    sandbox: SandboxSettings = SandboxSettings()
     database: DatabaseSettings = DatabaseSettings()
     logging: LoggingSettings = LoggingSettings()
 

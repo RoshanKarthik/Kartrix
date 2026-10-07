@@ -120,6 +120,11 @@ class Workspace:
         rel = self.relative(path)
         return rel == "." or not _denied(self.deny_read, path, rel)
 
+    def is_writable(self, path: Path) -> bool:
+        """For walkers: True if an already-resolved path inside the root may be written."""
+        rel = self.relative(path)
+        return rel == "." or not _denied(self.deny_write, path, rel)
+
 
 def _is_within(path: Path, root: Path) -> bool:
     p, r = os.path.normcase(str(path)), os.path.normcase(str(root))

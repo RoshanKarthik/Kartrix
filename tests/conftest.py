@@ -34,8 +34,23 @@ TEST_DATABASE_URL = _env.get("TEST_DATABASE_URL") or (
 if TEST_DATABASE_URL:
     os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 
-from tests.fakes import HashingEmbeddings  # noqa: E402 — after DATABASE_URL is set
+from tests.fakes import FakeSandbox, HashingEmbeddings  # noqa: E402 — after DATABASE_URL is set
 from tests.helpers import unavailable  # noqa: E402
+
+# ── sandbox ───────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def fake_sandbox() -> Iterator[FakeSandbox]:
+    """Every test runs with a pass-through sandbox unless it sets another (``set_sandbox``);
+    tests of the real backends create them directly."""
+    from kartrix.sandbox.manager import reset_sandbox, set_sandbox
+
+    sandbox = FakeSandbox()
+    set_sandbox(sandbox)
+    yield sandbox
+    reset_sandbox()
+
 
 # ── Postgres ──────────────────────────────────────────────────────────
 

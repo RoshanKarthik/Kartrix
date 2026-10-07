@@ -1,6 +1,7 @@
 """The agent's command tool. Every command passes the command policy first
 (``kartrix.security.command_policy``) and then runs without a shell, inside the workspace,
-with Kartrix's secrets removed from its environment and stdin closed.
+with Kartrix's secrets removed from its environment and stdin closed — and, where one is
+available, inside the sandbox (``kartrix.sandbox``) with the network the decision allows.
 """
 
 from __future__ import annotations
@@ -9,12 +10,15 @@ from langchain.tools import tool
 
 from kartrix.config import settings
 from kartrix.observability.logger import get_logger
+from kartrix.sandbox.base import SandboxError, SandboxRun
+from kartrix.sandbox.manager import sandbox_for
 from kartrix.security.audit import note
 from kartrix.security.budget import command_stop_check
 from kartrix.security.command_policy import Decision, evaluate
 from kartrix.security.environment import scrubbed_env
 from kartrix.security.permissions import get_mode, request_approval
-from kartrix.tools.process_runner import ProcessResult, run_process
+from kartrix.security.workspace import get_workspace
+from kartrix.tools.process_runner import Launch, ProcessResult, run_launch
 
 logger = get_logger(__name__)
 
@@ -78,8 +82,19 @@ def run_command(command: str, directory: str = ".") -> str:
         note(approved_by="user")
 
     timeout = settings.permissions.command_timeout
+    launch = Launch(decision.run_args, decision.cwd, scrubbed_env())
+    sandbox = sandbox_for(decision.argv)
+    if sandbox is not None and decision.network is not None and decision.cwd is not None:
+        run = SandboxRun(
+            decision.run_args, decision.argv, decision.cwd, launch.env, decision.network, get_workspace().root
+        )
+        try:
+            launch = sandbox.prepare(run)
+        except SandboxError as e:
+            return f"Error: command not run — {e}"
+        note(sandbox=sandbox.name, network=decision.network)
     try:
-        result = run_process(decision.run_args, decision.cwd, scrubbed_env(), timeout, command_stop_check())
+        result = run_launch(launch, timeout, command_stop_check())
     except OSError as e:
         return f"Error: could not start {decision.argv[0]}: {e.strerror or e}"
     note(returncode=result.returncode, timed_out=result.timed_out, stopped=result.stopped)

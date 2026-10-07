@@ -22,6 +22,7 @@ from kartrix.db.engine import session_scope
 from kartrix.db.models import Approval, ApprovalStatus
 from kartrix.memory.checkpointer import PgCheckpointSaver
 from kartrix.memory.session import record_session
+from kartrix.sandbox.manager import set_sandbox
 from kartrix.security import audit, external_tools, permissions
 from kartrix.security import workspace as ws_mod
 from kartrix.security.approvals import (
@@ -37,6 +38,7 @@ from kartrix.security.injection import ContentGuardMiddleware
 from kartrix.security.workspace import set_workspace
 from kartrix.tools.filesystem_tools import read_file, write_file
 from kartrix.tools.terminal_tools import run_command
+from tests.fakes import FakeSandbox
 
 pytestmark = pytest.mark.usefixtures("db")
 
@@ -94,6 +96,13 @@ def _agent(turns: list[list[Call]], saver: BaseCheckpointSaver[Any] | None = Non
 
 def cmd(command: str, directory: str = ".") -> Call:
     return ("run_command", {"command": command, "directory": directory})
+
+
+@pytest.fixture(autouse=True)
+def no_sandbox() -> None:
+    """These tests exercise the approval flow, which applies to commands that run code only
+    when no sandbox is available (with one, default mode runs them without asking)."""
+    set_sandbox(None)
 
 
 @pytest.fixture
@@ -235,6 +244,7 @@ async def test_destructive_commands_cannot_be_allowed_for_session(root: Path, si
 
 
 async def test_no_prompt_when_policy_allows(root: Path, sid: str) -> None:
+    set_sandbox(FakeSandbox())  # project code runs without asking only inside a sandbox
     permissions.set_mode("auto")
     approver = Scripted()
     messages = await run(_agent([[cmd("python x.py")], [cmd("sudo ls")]]), sid, approver)

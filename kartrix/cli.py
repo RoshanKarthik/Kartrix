@@ -3,6 +3,8 @@
 - ``kartrix`` — start the interactive session in the current directory.
 - ``kartrix stop`` — kill switch: stop every Kartrix run in progress on this machine
   (see :mod:`kartrix.security.kill_switch`). Imports almost nothing, so it works instantly.
+- ``kartrix sandbox [status|check|reset]`` — which sandbox runs commands here (:mod:`kartrix.sandbox`),
+  a live check of what it blocks, and (Windows) removing the folder access it was given.
 """
 
 from __future__ import annotations
@@ -21,7 +23,17 @@ def main(argv: list[str] | None = None) -> int:
         description="Stops every Kartrix turn or /plan run in progress (in any terminal) at its next step; "
         "running commands are killed within a second. Kartrix itself keeps running.",
     )
+    sandbox = commands.add_parser(
+        "sandbox",
+        help="show which sandbox runs commands here, check it, or reset it",
+        description="status: the sandbox in use and why others aren't available. check: run a probe in it and show "
+        "what it can and can't do. reset (Windows): remove every folder permission given to Kartrix's sandboxes.",
+    )
+    sandbox.add_argument("action", nargs="?", choices=["status", "check", "reset"], default="status")
     args = parser.parse_args(argv)
+
+    if args.command == "sandbox":
+        return _sandbox(args.action)
 
     if args.command == "stop":
         from kartrix.security.kill_switch import request_stop, stop_file
@@ -35,6 +47,38 @@ def main(argv: list[str] | None = None) -> int:
 
     run()
     return 0
+
+
+def _sandbox(action: str) -> int:
+    from kartrix.sandbox.manager import status
+
+    current = status()
+    print(f"Sandbox: {current.describe()}")
+    for line in current.tried if current.backend is not None else []:
+        print(f"  (not used — {line})")
+    if action == "status":
+        return 0 if current.backend is not None else 1
+    if action == "reset":
+        if sys.platform != "win32":
+            print("Nothing to reset: only the Windows sandbox changes folder permissions.")
+            return 0
+        from kartrix.sandbox.windows import AppContainerBackend
+
+        cleaned = AppContainerBackend().reset()
+        print(f"Removed the sandbox's access to {len(cleaned)} path(s); it is given again on the next command.")
+        return 0
+    if current.backend is None:
+        return 1
+    from kartrix.sandbox.selfcheck import run_check
+
+    results = run_check(current.backend)
+    for r in results:
+        got = "?" if r.allowed is None else ("allowed" if r.allowed else "blocked")
+        mark = "ok  " if r.allowed == r.expected else ("note" if r.tolerated else "FAIL")
+        print(f"  [{mark}] {r.name.replace('_', ' '):<16} {got}")
+    failed = [r.name for r in results if not r.ok]
+    print("Sandbox check passed." if not failed else f"Sandbox check FAILED: {', '.join(failed)}")
+    return 0 if not failed else 1
 
 
 if __name__ == "__main__":

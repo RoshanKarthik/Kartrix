@@ -15,7 +15,10 @@ A command string from the model goes through:
    only point at ``permissions.registries``; direct URL installs need approval.
 6. **Windows batch files** (``npm.cmd`` …) get a quoted command line; arguments cmd.exe
    would still interpret (``%``, ``"``) are refused.
-7. **User rules** (``permissions.deny`` / ``ask`` / ``allow``), then the **mode** table.
+7. **User rules** (``permissions.deny`` / ``ask`` / ``allow``), then the **mode** table, adjusted
+   for the sandbox (B8, :mod:`kartrix.sandbox`): with one, ``default`` mode also runs project code
+   and registry installs (where the sandbox limits the network to the registries) without asking;
+   without one, ``auto`` mode asks before running project code or installing.
 """
 
 from __future__ import annotations
@@ -31,6 +34,8 @@ from urllib.parse import urlsplit
 
 from kartrix.config import settings
 from kartrix.observability.logger import get_logger
+from kartrix.sandbox.base import Backend, Network
+from kartrix.sandbox.manager import argv_unsandboxed, network_for, require_native, sandbox_for
 from kartrix.security.command_rules import Category, Classification, classify, program_name
 from kartrix.security.permissions import Mode, get_mode
 from kartrix.security.workspace import Workspace, WorkspaceError, get_workspace
@@ -62,6 +67,17 @@ MODE_ACTIONS: dict[str, dict[Category, Action]] = {
 }
 
 
+def mode_action(mode: Mode, category: Category, sandbox: Backend | None) -> Action:
+    """The mode table, adjusted for whether (and how well) the command will be sandboxed."""
+    action = MODE_ACTIONS[mode][category]
+    if mode == "default" and sandbox is not None:
+        if category is Category.RUN or (category is Category.INSTALL and sandbox.registries_enforced):
+            return _ALLOW
+    if mode == "auto" and sandbox is None and category in (Category.RUN, Category.INSTALL):
+        return _ASK
+    return action
+
+
 @dataclass(frozen=True)
 class Decision:
     action: Action
@@ -72,6 +88,7 @@ class Decision:
     cwd: Path | None = None
     executable: Path | None = None
     cmdline: str | None = None  # Windows batch targets: the pre-quoted command line to run
+    network: Network | None = None  # set when the command runs sandboxed
 
     @property
     def run_args(self) -> list[str] | str:
@@ -375,14 +392,23 @@ def evaluate(command: str, directory: str = ".", mode: Mode | None = None, *, lo
             category = _check_install(argv, cls, cwd, ws)
         cmdline = batch_command_line(exe, argv[1:]) if _WINDOWS and exe.suffix.lower() in (".bat", ".cmd") else None
 
+        sandbox = sandbox_for(argv)
+        exempt = sandbox is None and not argv_unsandboxed(argv)  # would be sandboxed, but none exists
+        if exempt and require_native():
+            raise _Deny("sandbox.backend is 'native' but no sandbox is available here (run `kartrix sandbox`)")
         rule = _user_rule(argv)
-        action: Action = MODE_ACTIONS[mode][category]
+        action: Action = mode_action(mode, category, sandbox)
         reason = cls.reason
         if rule is not None and mode != "read_only":
             action, reason = rule, f"{reason}; matched a permissions.{rule} rule"
         elif rule == _DENY:
             action = _DENY
-        decision = Decision(action, category, reason, command, argv, cwd, exe, cmdline)
+        network = network_for(category, sandbox) if sandbox is not None else None
+        if sandbox is not None and network is not None:
+            reason = f"{reason} ({sandbox.label(network)})"
+        elif exempt and category not in (Category.READ, Category.WRITE):
+            reason = f"{reason} (not sandboxed: no sandbox available)"
+        decision = Decision(action, category, reason, command, argv, cwd, exe, cmdline, network)
     except _Deny as e:
         decision = Decision(_DENY, e.category, str(e), command, argv, cwd)
 

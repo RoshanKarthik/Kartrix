@@ -26,6 +26,7 @@ from kartrix.memory.session import (
 )
 from kartrix.memory.short_term import get_checkpointer
 from kartrix.observability.logger import get_logger
+from kartrix.sandbox.manager import status as sandbox_status
 from kartrix.security import audit, checkpoints, external_tools
 from kartrix.security.approval_prompt import ConsoleApprover
 from kartrix.security.approvals import resume_pending
@@ -328,6 +329,9 @@ async def initialize(checkpointer):
     else:
         undo, _ = await asyncio.to_thread(checkpoints.current().entries)  # type: ignore[union-attr]
         console.print(f"[dim]Checkpoints: on ({len(undo)} undo points) — /undo reverts the last change[/dim]")
+    sandbox = await asyncio.to_thread(sandbox_status)
+    style = "dim" if sandbox.backend is not None else "yellow"
+    console.print(f"[{style}]Sandbox: {escape(sandbox.describe())}[/{style}]")
     await update_index()
 
     semantic_cache = await build_semantic_cache()

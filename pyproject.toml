@@ -99,6 +99,7 @@ module = [
     "kartrix.context.retrievers.*",
     "kartrix.memory.checkpointer",
     "kartrix.tasks.task_store",
+    "kartrix.sandbox.*",
     "kartrix.security.*",
     "kartrix.tools.filesystem_tools",
     "kartrix.tools.process_runner",

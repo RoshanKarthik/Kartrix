@@ -136,6 +136,41 @@ checkpoints:                    # snapshot before every turn and /plan task, for
     - .next/
     - .turbo/
 
+sandbox:                        # where commands that run code execute (kartrix/sandbox/; `kartrix sandbox` shows it)
+  backend: auto                 # auto | native | docker | none — none: every command that runs code needs approval
+  limits:
+    memory_mb: 4096             # whole command tree on Windows/Docker, per process on Linux (macOS: not enforced)
+    max_processes: 512          # not enforced on macOS
+    max_file_mb: 2048           # largest file a command may write (macOS / Linux)
+  deny_read_home:               # never readable by sandboxed commands (relative to your home folder)
+    - .ssh
+    - .gnupg
+    - .aws
+    - .azure
+    - .kube
+    - .docker
+    - .config/gcloud
+    - .config/gh
+    - .config/git
+    - .git-credentials
+    - .netrc
+    - .npmrc
+    - .yarnrc
+    - .yarnrc.yml
+    - .pypirc
+    - .password-store
+    - .local/share/keyrings
+    - Library/Keychains
+    - .config/kartrix
+    - .local/share/kartrix
+    - Library/Application Support/kartrix
+    - AppData/Local/kartrix
+  extra_read: []                # folders sandboxed commands may also read (Windows: e.g. a toolchain in your profile)
+  extra_write: []               # folders outside the workspace they may also write
+  docker:
+    image: null                 # backend: docker only — an image with your project's toolchain
+    cpus: null
+
 retrieval:
   mode: hybrid                  # hybrid (pgvector + Postgres full-text, RRF) | dense | sparse
   top_k: 5

@@ -9,6 +9,8 @@ import re
 from langchain_core.embeddings import Embeddings
 
 from kartrix.db.models import EMBEDDING_DIMS
+from kartrix.sandbox.base import Backend, SandboxRun
+from kartrix.tools.process_runner import Launch
 
 _WORD = re.compile(r"[a-z0-9]+")
 
@@ -42,3 +44,18 @@ class HashingEmbeddings(Embeddings):
 
     async def aembed_query(self, text: str) -> list[float]:
         return self.embed_query(text)
+
+
+class FakeSandbox(Backend):
+    """A "sandbox" that runs commands as they are (no confinement) and records them — so policy
+    and tool tests don't depend on which real sandbox the machine has."""
+
+    name = "fake"
+
+    def __init__(self, registries_enforced: bool = True) -> None:
+        self.registries_enforced = registries_enforced
+        self.runs: list[SandboxRun] = []
+
+    def prepare(self, run: SandboxRun) -> Launch:
+        self.runs.append(run)
+        return Launch(run.args, run.cwd, run.env)

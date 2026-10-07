@@ -10,12 +10,16 @@ from pathlib import Path
 import pytest
 
 from kartrix.config import settings
+from kartrix.sandbox.base import SandboxError, SandboxRun
+from kartrix.sandbox.manager import set_sandbox
 from kartrix.security import permissions
 from kartrix.security import workspace as ws_mod
 from kartrix.security.command_policy import evaluate
 from kartrix.security.workspace import set_workspace
 from kartrix.tools.filesystem_tools import write_file
+from kartrix.tools.process_runner import Launch
 from kartrix.tools.terminal_tools import run_command
+from tests.fakes import FakeSandbox
 
 
 @pytest.fixture
@@ -87,6 +91,7 @@ def test_long_output_is_clipped(auto: Path) -> None:
 
 
 def test_denied_and_ask_messages(root: Path) -> None:
+    set_sandbox(None)  # without a sandbox, running project code needs approval in default mode
     assert run("sudo ls").startswith("Error: command denied")
     assert run("ls | head").startswith("Error: command denied")
     script(root, "x.py", "print('ran')")
@@ -95,6 +100,7 @@ def test_denied_and_ask_messages(root: Path) -> None:
 
 
 def test_user_approval_and_session_allowance(root: Path) -> None:
+    set_sandbox(None)
     script(root, "x.py", "print('ran')")
     with permissions.user_approved():  # what the approval middleware sets for an approved call
         assert run("python x.py").strip() == "ran"
@@ -130,3 +136,23 @@ def test_background_leftovers_are_killed(auto: Path) -> None:
     assert run("python detach.py") == "(no output)"
     time.sleep(3)
     assert not (auto / "leftover.txt").exists()
+
+
+def test_commands_run_through_the_sandbox(root: Path, fake_sandbox: FakeSandbox) -> None:
+    script(root, "x.py", "print('ran')")
+    assert run("python x.py").strip() == "ran"  # default mode: sandboxed project code runs without asking
+    (sandboxed,) = fake_sandbox.runs
+    assert sandboxed.network == "off" and sandboxed.workspace == root and sandboxed.argv == ["python", "x.py"]
+    assert not any("KEY" in k for k in sandboxed.env)  # secrets were removed before the sandbox saw it
+    assert run("git --version")  # git runs outside the sandbox
+    assert len(fake_sandbox.runs) == 1
+
+
+def test_sandbox_setup_failure_is_reported(root: Path) -> None:
+    class Broken(FakeSandbox):
+        def prepare(self, run: SandboxRun) -> Launch:
+            raise SandboxError("could not set up the sandbox's file access: boom")
+
+    set_sandbox(Broken())
+    script(root, "x.py", "print('ran')")
+    assert run("python x.py") == "Error: command not run — could not set up the sandbox's file access: boom"

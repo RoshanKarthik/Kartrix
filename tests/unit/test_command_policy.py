@@ -9,12 +9,14 @@ from pathlib import Path
 import pytest
 
 from kartrix.config import settings
+from kartrix.sandbox.manager import set_sandbox
 from kartrix.security import permissions
 from kartrix.security import workspace as ws_mod
 from kartrix.security.command_policy import _Deny, _rule_matches, batch_command_line, evaluate, parse_command
 from kartrix.security.command_rules import Category, classify
 from kartrix.security.environment import is_secret_var, scrubbed_env
 from kartrix.security.workspace import set_workspace
+from tests.fakes import FakeSandbox
 
 _EXE = ".exe" if os.name == "nt" else ""
 _TOOLS = ["git", "npm", "npx", "pip", "uv", "pytest", "python", "curl", "rm", "ls", "cat", "grep", "mkdir", "cp",
@@ -174,26 +176,49 @@ def test_package_json_scripts_for_pnpm(tmp_path: Path) -> None:
 # ── modes ─────────────────────────────────────────────────────────────
 
 
+# Expected (read_only, default, auto) with: a sandbox enforcing the registries (bubblewrap, Seatbelt),
+# a sandbox that can't (AppContainer, Landlock, Docker), and no sandbox.
 @pytest.mark.parametrize(
-    ("command", "read_only", "default", "auto"),
+    ("command", "enforced", "not_enforced", "none"),
     [
-        ("git status", "allow", "allow", "allow"),
-        ("mkdir build", "deny", "allow", "allow"),
-        ("pytest -q", "deny", "ask", "allow"),
-        ("npm install", "deny", "ask", "allow"),
-        ("git commit -m x", "deny", "ask", "allow"),
-        ("curl https://example.com", "deny", "ask", "ask"),
-        ("rm build", "deny", "ask", "ask"),
-        ("foo", "deny", "ask", "ask"),
-        ("sudo ls", "deny", "deny", "deny"),
+        ("git status", "allow allow allow", "allow allow allow", "allow allow allow"),
+        ("mkdir build", "deny allow allow", "deny allow allow", "deny allow allow"),
+        ("pytest -q", "deny allow allow", "deny allow allow", "deny ask ask"),
+        ("npm install", "deny allow allow", "deny ask allow", "deny ask ask"),
+        ("git commit -m x", "deny ask allow", "deny ask allow", "deny ask allow"),
+        ("curl https://example.com", "deny ask ask", "deny ask ask", "deny ask ask"),
+        ("rm build", "deny ask ask", "deny ask ask", "deny ask ask"),
+        ("foo", "deny ask ask", "deny ask ask", "deny ask ask"),
+        ("sudo ls", "deny deny deny", "deny deny deny", "deny deny deny"),
     ],
 )
-def test_mode_matrix(root: Path, command: str, read_only: str, default: str, auto: str) -> None:
-    assert (action(command, "read_only"), action(command, "default"), action(command, "auto")) == (
-        read_only,
-        default,
-        auto,
-    )
+def test_mode_matrix(root: Path, command: str, enforced: str, not_enforced: str, none: str) -> None:
+    for sandbox, expected in ((FakeSandbox(True), enforced), (FakeSandbox(False), not_enforced), (None, none)):
+        set_sandbox(sandbox)
+        got = " ".join(action(command, m) for m in ("read_only", "default", "auto"))
+        assert got == expected, f"{command!r} with sandbox {sandbox and sandbox.registries_enforced}"
+
+
+def test_network_and_sandbox_note_in_decision(root: Path) -> None:
+    set_sandbox(FakeSandbox(True))
+    assert evaluate("pytest -q", mode="auto").network == "off"
+    d = evaluate("npm install", mode="auto")
+    assert d.network == "registries" and "sandboxed: fake, network registries" in d.reason
+    assert evaluate("curl https://example.com", mode="auto").network == "full"
+    assert evaluate("git status", mode="auto").network is None  # git never runs sandboxed
+    set_sandbox(FakeSandbox(False))
+    assert evaluate("npm install", mode="auto").network == "full"
+    set_sandbox(None)
+    d = evaluate("pytest -q", mode="auto")
+    assert d.network is None and "not sandboxed" in d.reason
+
+
+def test_native_backend_required(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    set_sandbox(None)
+    monkeypatch.setattr(settings.sandbox, "backend", "native")
+    d = evaluate("pytest -q", mode="auto")
+    assert d.action == "deny" and "no sandbox" in d.reason
+    assert evaluate("git status", mode="auto").action == "allow"
 
 
 def test_mode_defaults_to_config_and_can_change(root: Path) -> None:
