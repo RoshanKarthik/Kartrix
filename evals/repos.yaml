@@ -1,0 +1,22 @@
+# Fixture repositories for the RAG golden questions (evals/rag/golden.yaml).
+# Pinned to a commit so the labels stay true: changing a pin means re-checking every question of that repo.
+repos:
+  - name: kartrix
+    source: self
+    commit: c0e37b6e7f4c12cc0968583b93c168df7c7b5c3e   # step 2.2 — the code the baseline was recorded on
+    stacks: [python]
+    description: This repository (Python CLI agent; ~100 modules)
+
+  - name: fastapi-template
+    source: git
+    url: https://github.com/fastapi/full-stack-fastapi-template
+    commit: f27b4721507824e57ebd0286ff1a84d82e83bf59
+    stacks: [python, typescript]
+    description: Full-stack app — FastAPI + SQLModel backend, React + Vite + TanStack frontend (MIT)
+
+  - name: realworld-express
+    source: git
+    url: https://github.com/gothinkster/node-express-realworld-example-app
+    commit: 30b68e1e881462b2f4164ea09ab4c4f5699c7b0b
+    stacks: [typescript]
+    description: RealWorld (Medium clone) API — Express + Prisma in TypeScript (MIT)

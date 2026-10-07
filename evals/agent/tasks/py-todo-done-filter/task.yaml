@@ -1,0 +1,13 @@
+id: py-todo-done-filter
+app: py-todo-api
+stack: python
+category: feature
+task: >-
+  Let GET /todos filter by completion: ?done=true returns only finished todos, ?done=false only open ones,
+  and any other value of done is a 400 error. "total" must count the filtered todos, and pagination must
+  keep working with the filter. Add tests.
+check:
+  - name: tests
+    run: ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"]
+expect:
+  tools: [read_file, edit_file]

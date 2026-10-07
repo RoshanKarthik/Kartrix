@@ -1,0 +1,14 @@
+{
+  "name": "text-utils",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Small string helpers: slugify, durations, pagination. TypeScript run directly by Node (>= 23.6).",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=23.6"
+  }
+}

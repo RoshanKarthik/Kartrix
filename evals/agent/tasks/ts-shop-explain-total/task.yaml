@@ -1,0 +1,19 @@
+id: ts-shop-explain-total
+app: ts-shop-api
+stack: typescript
+category: explain
+permissions: read_only
+task: >-
+  Explain how the cart total is calculated: in which order are the coupon discount and the tax applied,
+  and how are amounts rounded? Name the functions involved. Don't change any files.
+answer:
+  contains_all: ["cartTotal", "applyCoupon"]
+  contains_any: ["Math.round", "round"]
+  reference: >-
+    cartTotal in src/pricing.ts sums quantity x unit price (cents), applyCoupon computes the discount
+    (0 below the coupon's minimum subtotal, percentage rounded with Math.round, fixed amounts added, capped
+    at the subtotal), then tax (8 %) is charged on the subtotal minus the discount, rounded with Math.round;
+    total = subtotal - discount + tax.
+expect:
+  tools: [read_file]
+  unchanged: ["*"]

@@ -1,0 +1,24 @@
+id: py-todo-test-update
+app: py-todo-api
+stack: python
+category: test
+task: >-
+  Write pytest tests for TodoStore.update in todo/storage.py, in a new file tests/test_update.py. Cover
+  changing the title, marking a todo done and back to not done, replacing the tags, leaving the fields that
+  are not given unchanged, and returning None for an unknown id. Don't change the code under todo/.
+check:
+  - name: tests pass
+    run: ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"]
+  - name: tests/test_update.py exists
+    run: ["{python}", "-c", "import pathlib, sys; sys.exit(0 if pathlib.Path('tests/test_update.py').is_file() else 1)"]
+  - name: the tests catch planted bugs
+    run: ["{python}", ".eval/mutation_check.py",
+          "--mutant", "todo/storage.py=.eval/mutants/storage_done_sticky.py",
+          "--mutant", "todo/storage.py=.eval/mutants/storage_tags_lost.py",
+          "--mutant", "todo/storage.py=.eval/mutants/storage_title_clears_tags.py",
+          "--", "{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"]
+    timeout: 300
+expect:
+  tools: [read_file, write_file]
+  unchanged: ["todo/*"]
+notes: Scored by mutation testing — the new tests must fail on three planted bugs in update().

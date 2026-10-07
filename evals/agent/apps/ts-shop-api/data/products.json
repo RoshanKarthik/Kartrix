@@ -1,0 +1,6 @@
+[
+  { "id": "p1", "name": "Ceramic mug", "priceCents": 1250, "description": "A 350 ml stoneware mug." },
+  { "id": "p2", "name": "Pour-over kettle", "priceCents": 4900, "description": "Gooseneck kettle, 1 litre." },
+  { "id": "p3", "name": "Coffee beans", "priceCents": 1599, "description": "250 g, medium roast." },
+  { "id": "p4", "name": "Paper filters", "priceCents": 450, "description": "Pack of 100." }
+]

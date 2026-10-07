@@ -1,0 +1,14 @@
+id: ts-utils-locate-units
+app: ts-text-utils
+stack: typescript
+category: locate
+permissions: read_only
+task: >-
+  Where are the duration units and their length in seconds defined, and which units are supported? Don't
+  change anything.
+answer:
+  contains_all: ["duration.ts", "UNIT_SECONDS"]
+  contains_any: ["ms"]
+  reference: In src/duration.ts, the UNIT_SECONDS table - d (86400), h (3600), m (60), s (1) and ms (0.001).
+expect:
+  unchanged: ["*"]

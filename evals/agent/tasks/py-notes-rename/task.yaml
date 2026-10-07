@@ -1,0 +1,12 @@
+id: py-notes-rename
+app: py-notes-cli
+stack: python
+category: refactor
+task: >-
+  Rename the function fmt_note to format_note everywhere: its definition, imports, calls and tests. Don't
+  keep an alias under the old name.
+check:
+  - name: tests
+    run: ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"]
+expect:
+  tools: [grep, edit_file]

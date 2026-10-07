@@ -1,0 +1,14 @@
+{
+  "name": "shop-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A tiny shop API: catalog, cart and pricing. TypeScript run directly by Node (>= 23.6, type stripping).",
+  "scripts": {
+    "start": "node src/server.ts",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=23.6"
+  }
+}

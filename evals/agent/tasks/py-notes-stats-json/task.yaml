@@ -1,0 +1,14 @@
+id: py-notes-stats-json
+app: py-notes-cli
+stack: python
+category: feature
+task: >-
+  Add a --json flag to "notes stats" that prints one JSON object instead of the text:
+  {"notes": <number of notes>, "words": <number of words>, "top_words": [["word", count], ...]}
+  (top_words as the existing top_words() returns them). Without the flag the output stays as it is.
+  Add a test.
+check:
+  - name: tests
+    run: ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"]
+expect:
+  tools: [read_file, edit_file]

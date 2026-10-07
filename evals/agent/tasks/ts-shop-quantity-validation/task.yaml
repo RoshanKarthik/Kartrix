@@ -1,0 +1,13 @@
+id: ts-shop-quantity-validation
+app: ts-shop-api
+stack: typescript
+category: feature
+task: >-
+  POST /cart/items accepts any quantity (0, -3, 1.5, "2"). Only allow whole numbers from 1 to 99 — a
+  missing quantity still means 1 — and answer anything else with 400 and
+  {"error": "quantity must be a whole number from 1 to 99"}. Add tests.
+check:
+  - name: tests
+    run: ["{node}", "--test"]
+expect:
+  tools: [read_file, edit_file]

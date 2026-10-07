@@ -1,0 +1,809 @@
+# Golden questions for the RAG eval. Each is labelled with the files (and, where it helps, the
+# symbols) that answer it, at the commit pinned in evals/repos.yaml, plus a short reference answer.
+# kind: locate | explain | flow | config | security | test.  quick: part of the everyday subset.
+# Add questions the way a user would ask them — not with the identifiers already in them.
+questions:
+  # ── kartrix (this repository, at step 2.2) ───────────────────────────────────────────────
+  - id: k01-command-modes
+    repo: kartrix
+    kind: locate
+    quick: true
+    question: Where does Kartrix decide whether a shell command is allowed, needs approval or is refused in each permission mode?
+    files: [kartrix/security/command_policy.py]
+    symbols: [MODE_ACTIONS, mode_action, evaluate]
+    answer: In kartrix/security/command_policy.py — MODE_ACTIONS maps each mode (read_only, default, auto) and command category to allow/ask/deny, mode_action adjusts it for the sandbox, and evaluate() classifies a command and returns the Decision.
+
+  - id: k02-default-mode-sandbox
+    repo: kartrix
+    kind: explain
+    question: In the default permission mode, when do commands that run code or install packages run without asking the user?
+    files: [kartrix/security/command_policy.py]
+    symbols: [mode_action]
+    answer: With a sandbox available, default mode allows RUN commands without asking, and INSTALL commands only when the sandbox enforces that the network reaches only the package registries; otherwise they need approval.
+
+  - id: k03-rule-matching
+    repo: kartrix
+    kind: explain
+    question: How is an approval rule such as "npm run *" matched against a command?
+    files: [kartrix/security/command_policy.py]
+    symbols: [rule_matches]
+    answer: rule_matches splits the rule with shlex, normalises the program name, and compares token by token; a trailing * matches any remaining arguments, otherwise every token must match exactly and the lengths must be equal.
+
+  - id: k04-secret-kinds
+    repo: kartrix
+    kind: security
+    quick: true
+    question: Which kinds of secrets are detected and redacted before text is embedded, cached or logged?
+    files: [kartrix/security/secrets.py]
+    symbols: [RULES, find_secrets, redact]
+    answer: kartrix/security/secrets.py has rules for private keys, AWS/GitHub/GitLab/Slack/Stripe/Anthropic/OpenAI/NVIDIA/Hugging Face/Google/npm/PyPI/SendGrid keys and tokens, JWTs, passwords in URLs, auth headers and high-entropy assignments to sensitive names, plus the exact secret values from Kartrix's own environment; matches are replaced by [REDACTED:rule] placeholders.
+
+  - id: k05-placeholder-values
+    repo: kartrix
+    kind: security
+    question: How does the secret scanner avoid treating placeholder values like "changeme" or environment lookups as real secrets?
+    files: [kartrix/security/secrets.py]
+    symbols: [_looks_random, shannon_entropy]
+    answer: Assignment matches are only redacted if _looks_random accepts the value - values matching _NOT_A_VALUE (placeholders like changeme/example/dummy, $VAR, os.environ, settings.) or plain identifiers are rejected, and the value needs Shannon entropy of at least 3.5 and two character classes.
+
+  - id: k06-prompt-injection
+    repo: kartrix
+    kind: security
+    quick: true
+    question: What protects the agent against instructions hidden in files, search results or MCP responses?
+    files: [kartrix/security/injection.py]
+    symbols: [SECURITY_RULES, scan, guard_text, ContentGuardMiddleware]
+    answer: kartrix/security/injection.py - SECURITY_RULES in every system prompt say tool results are data; scan() flags override attempts, fake chat markup, text addressed to AI agents, exfiltration requests and hidden Unicode; flagged results get a notice; external MCP content is wrapped in untrusted-data blocks; after external content, auto mode is capped to default and ContentGuardMiddleware requires approval for MCP tools that may change data.
+
+  - id: k07-workspace-escape
+    repo: kartrix
+    kind: security
+    question: How are file tools prevented from reading or writing outside the repository, even through symlinks?
+    files: [kartrix/security/workspace.py]
+    symbols: [Workspace.resolve, _is_within]
+    answer: Workspace.resolve in kartrix/security/workspace.py resolves the path with os.path.realpath (following symlinks and junctions) relative to the root, rejects it if the real path is not within the root, then checks deny_read/deny_write gitignore patterns for protected paths like .env and .git.
+
+  - id: k08-windows-paths
+    repo: kartrix
+    kind: security
+    question: Which Windows-specific path tricks does the workspace jail reject?
+    files: [kartrix/security/workspace.py]
+    symbols: [check_windows_path]
+    answer: check_windows_path rejects device and UNC prefixes, drive-relative paths like C:foo, alternate data streams, reserved device names such as nul or com1, and path components ending in a dot or space.
+
+  - id: k09-kill-switch
+    repo: kartrix
+    kind: explain
+    question: How does running `kartrix stop` in another terminal stop a run that is already going?
+    files: [kartrix/security/kill_switch.py]
+    symbols: [request_stop, stop_file, stop_requested_at]
+    answer: request_stop writes the current time to a stop file in the per-user data folder; every run checks it before each model or tool call and every half second while a command runs, and stops if the stop time is after the run started.
+
+  - id: k10-env-scrub
+    repo: kartrix
+    kind: security
+    question: Which environment variables are removed before the agent's commands run?
+    files: [kartrix/security/environment.py]
+    symbols: [is_secret_var, scrubbed_env]
+    answer: scrubbed_env drops every variable is_secret_var flags - names containing KEY, TOKEN, SECRET, PASSWORD, CREDENTIAL, AUTH, COOKIE or PRIVATE, DATABASE_URL/TEST_DATABASE_URL/REDIS_URL, anything starting with KARTRIX_, and values that are URLs with a password - except names listed in permissions.env_passthrough.
+
+  - id: k11-tool-call-limit
+    repo: kartrix
+    kind: explain
+    question: What happens when a run reaches its limit on tool calls?
+    files: [kartrix/security/budget.py]
+    symbols: [Budget, BudgetMiddleware]
+    answer: BudgetMiddleware refuses further tool calls, but the tool-call limit is gentler than the others - the model gets one more call to tell the user what it did and what is left, then the run stops.
+
+  - id: k12-approval-batching
+    repo: kartrix
+    kind: flow
+    question: When the model asks to run several commands that need approval in one turn, how are they handled and resumed?
+    files: [kartrix/security/approvals.py]
+    symbols: [ApprovalMiddleware, resolve, run_agent]
+    answer: ApprovalMiddleware evaluates the policy for every run_command call after the model turn and batches all calls that need approval into one LangGraph interrupt before any tool runs; the client (run_agent/resume_pending) asks the Approver, records the requests and decisions, and resumes with decisions keyed by tool-call id.
+
+  - id: k13-skill-trust
+    repo: kartrix
+    kind: security
+    question: How does Kartrix decide whether skills shipped inside a repository may be used?
+    files: [kartrix/skills/trust.py]
+    symbols: [skill_digest, trusted_digests, trust]
+    answer: Trust on first use - a skill is used only after the user trusts it, and the trust is pinned to a SHA-256 digest over all of the skill's files stored in the per-user data folder; any change makes it untrusted again.
+
+  - id: k14-mcp-binary-verify
+    repo: kartrix
+    kind: security
+    question: How are downloaded MCP server binaries checked before they are run?
+    files: [kartrix/mcp/binaries.py]
+    symbols: [ensure_binary]
+    answer: ensure_binary downloads the release archive for the platform, compares its SHA-256 with the hash pinned in Kartrix's own mcp_servers.json, rejects it on mismatch, extracts only the expected executable and stores it atomically in the per-user cache.
+
+  - id: k15-mcp-tool-vetting
+    repo: kartrix
+    kind: security
+    question: Which MCP tools are dropped, and which need approval, when an MCP server connects?
+    files: [kartrix/mcp/mcp_client.py]
+    symbols: [vet_tools]
+    answer: vet_tools keeps only allow-listed tools, drops tools whose name collides with an existing tool or whose description/schema looks like prompt injection, strips hidden characters and clips descriptions; tools not marked read-only (or listed in approve) need the user's approval.
+
+  - id: k16-semantic-cache-hit
+    repo: kartrix
+    kind: explain
+    question: When does the semantic cache return a stored answer instead of running the agent?
+    files: [kartrix/cache/semantic_cache.py]
+    symbols: [SemanticCache.get, SemanticCache._top_match]
+    answer: SemanticCache.get redacts the query, finds the nearest cached query in Redis filtered by repo domain and model, and returns the stored response only if the cosine similarity is at least the configured threshold.
+
+  - id: k17-cache-invalidation
+    repo: kartrix
+    kind: explain
+    question: How are cached answers for a repository thrown away after its code changes?
+    files: [kartrix/cache/semantic_cache.py]
+    symbols: [invalidate_domain, get_repo_domain]
+    answer: Every key contains the repo's domain (a hash of the repo path from get_repo_domain); invalidate_domain scans that key prefix and deletes all of the repository's entries when the watcher sees a change.
+
+  - id: k18-session-ids
+    repo: kartrix
+    kind: security
+    question: What session ids does Kartrix accept, for example when switching sessions?
+    files: [kartrix/memory/session.py]
+    symbols: [validate_session_id]
+    answer: Only canonical lowercase UUID4 strings of exactly 36 characters; braces, urn prefixes, missing hyphens or other versions are rejected, and a corrupted current_session file starts a new session.
+
+  - id: k19-chat-checkpoints
+    repo: kartrix
+    kind: locate
+    question: Where is the conversation state of chat sessions stored so it survives a restart?
+    files: [kartrix/memory/checkpointer.py, kartrix/memory/short_term.py]
+    symbols: [PgCheckpointSaver, get_checkpointer]
+    answer: In Postgres via PgCheckpointSaver (kartrix/memory/checkpointer.py), a LangGraph checkpoint saver returned by get_checkpointer in kartrix/memory/short_term.py; each session id is a thread.
+
+  - id: k20-execution-plan
+    repo: kartrix
+    kind: explain
+    question: What does a generated plan contain and which rules must its tasks follow?
+    files: [kartrix/tasks/planner.py]
+    symbols: [ExecutionPlan, PlannedTask, create_plan]
+    answer: ExecutionPlan has project name, goal summary, tech stack, estimated hours, tasks, risks and assumptions; each PlannedTask has an id, title, description, type, dependencies, estimate, output files and acceptance criteria; the prompt requires 5-20 tasks with ids like task_001, a valid DAG and 3-5 verifiable criteria per task.
+
+  - id: k21-task-type-tools
+    repo: kartrix
+    kind: explain
+    question: Which tools does a task agent get, depending on the kind of task?
+    files: [kartrix/tasks/executor.py]
+    symbols: [_TOOLS_BY_TYPE]
+    answer: _TOOLS_BY_TYPE gives every type the read tools; implement and configure get all write tools, design and review only write_file and edit_file, and only test and integrate tasks also get run_command (least privilege).
+
+  - id: k22-task-judge
+    repo: kartrix
+    kind: explain
+    question: How does Kartrix decide whether a planned task was completed well enough?
+    files: [kartrix/tasks/executor.py]
+    symbols: [_judge_task, _JudgeVerdict]
+    answer: An LLM judge (the judge model) scores the agent's output 0-10 against the task's description and acceptance criteria; it passes when the score is at least 6.
+
+  - id: k23-ready-tasks
+    repo: kartrix
+    kind: flow
+    question: How does the plan executor choose which tasks to run next?
+    files: [kartrix/tasks/orchestrator.py, kartrix/tasks/task_store.py]
+    symbols: [TaskOrchestrator.run, get_ready_tasks]
+    answer: TaskOrchestrator.run repeatedly asks the TaskStore for ready tasks - those whose dependencies are all completed or skipped - and runs up to max_concurrent of them, stopping when nothing is ready and reporting blocked tasks.
+
+  - id: k24-crash-recovery
+    repo: kartrix
+    kind: explain
+    question: What happens to tasks that were still running when Kartrix crashed?
+    files: [kartrix/tasks/recovery.py, kartrix/tasks/task_store.py]
+    symbols: [RecoveryManager.recover, recover_crashed]
+    answer: On resume RecoveryManager.recover resets every task still marked in progress - back to pending if it has retries left, otherwise failed.
+
+  - id: k25-index-skips
+    repo: kartrix
+    kind: explain
+    quick: true
+    question: Which files are left out when Kartrix indexes a repository?
+    files: [kartrix/context/discovery.py]
+    symbols: [RepoFilter, discover_files]
+    answer: Files ignored by any .gitignore or .git/info/exclude, the index.exclude patterns (e.g. .git, .venv, node_modules, .env, keys), files with unknown extensions, files over the size cap, binary files, and symlinks (never followed).
+
+  - id: k26-chunking
+    repo: kartrix
+    kind: explain
+    question: How is a source file split into chunks before it is embedded?
+    files: [kartrix/context/indexers/code_parser.py]
+    symbols: [parse_file, _sliding_window]
+    answer: parse_file uses tree-sitter for code and extracts functions, methods and classes as chunks; text files, and code files without such blocks, are split into 50-line sliding windows with 10 lines of overlap.
+
+  - id: k27-incremental-index
+    repo: kartrix
+    kind: flow
+    question: How does re-indexing avoid embedding files that did not change?
+    files: [kartrix/context/indexers/pg_index.py]
+    symbols: [index_repo, _index]
+    answer: For each file the stored row is reused when size and mtime match and the embedding model and index version are the same; otherwise the content hash is compared and only changed files are parsed and embedded; rows of deleted files are removed.
+
+  - id: k28-hybrid-retrieval
+    repo: kartrix
+    kind: explain
+    quick: true
+    question: How are vector search and keyword search results combined when searching the code?
+    files: [kartrix/context/retrievers/pg_hybrid.py]
+    symbols: [retrieve, _sql]
+    answer: In one SQL query, pgvector cosine search and Postgres full-text search each return candidates that are fused with reciprocal rank fusion, score = sum of 1/(rrf_k + rank), so their score scales never need normalising.
+
+  - id: k29-tsquery-injection
+    repo: kartrix
+    kind: security
+    question: How is the keyword search protected from special query syntax in the user's question?
+    files: [kartrix/context/retrievers/pg_hybrid.py]
+    symbols: [build_tsquery]
+    answer: build_tsquery keeps only alphanumeric words (plus camelCase parts) and joins them with OR, so no tsquery operators from the input survive; values are bound parameters.
+
+  - id: k30-file-watcher
+    repo: kartrix
+    kind: flow
+    question: What happens in the index when I save a file while Kartrix is running?
+    files: [kartrix/context/indexers/watcher.py]
+    symbols: [_CodebaseEventHandler, start_watcher]
+    answer: A watchdog observer reports the change; the handler debounces it (1.5 s) and, if the path passes the repo's ignore rules, schedules index_file or remove_file on the event loop; editing a .gitignore triggers a full incremental reindex.
+
+  - id: k31-sandbox-per-os
+    repo: kartrix
+    kind: locate
+    quick: true
+    question: Which sandbox is used to run commands on Windows, macOS and Linux?
+    files: [kartrix/sandbox/manager.py]
+    symbols: [_native_candidates, detect]
+    answer: sandbox/manager.py picks AppContainer on Windows, Seatbelt (sandbox-exec) on macOS, and bubblewrap or else Landlock on Linux; Docker or none can be configured.
+
+  - id: k32-git-unsandboxed
+    repo: kartrix
+    kind: explain
+    question: Why does git run outside the sandbox?
+    files: [kartrix/sandbox/manager.py]
+    symbols: [UNSANDBOXED_PROGRAMS, argv_unsandboxed]
+    answer: git is trusted and must write .git (protected inside the sandbox) and use the user's credentials, so UNSANDBOXED_PROGRAMS = {"git"}; the command policy still decides what git may do.
+
+  - id: k33-appcontainer
+    repo: kartrix
+    kind: explain
+    question: How does the Windows sandbox limit what a command can read, write and reach on the network?
+    files: [kartrix/sandbox/windows.py]
+    answer: Each workspace gets its own AppContainer profile; its SID is granted Modify on the workspace and state folder and Read & execute on the toolchain, protected paths lose the grant, network is off unless an approved command gets internetClient, and the process runs suspended into a job object with limits.
+
+  - id: k34-registry-proxy
+    repo: kartrix
+    kind: explain
+    question: How can a sandboxed install on Linux or macOS reach package registries but nothing else?
+    files: [kartrix/sandbox/proxy.py]
+    symbols: [RegistryProxy, host_allowed]
+    answer: A local proxy accepts only CONNECT to port 443 of hosts in permissions.registries or their subdomains and requires a random token that only install runs receive; sandboxed installs have no other network.
+
+  - id: k35-config-priority
+    repo: kartrix
+    kind: config
+    question: Where do configuration values come from and which source wins?
+    files: [kartrix/config.py]
+    symbols: [Settings.settings_customise_sources, load_settings]
+    answer: KARTRIX_* environment variables (nested with __) override kartrix/config.yaml (or KARTRIX_CONFIG_FILE), which overrides the defaults declared on the pydantic models.
+
+  - id: k36-strict-yaml
+    repo: kartrix
+    kind: config
+    question: What happens if config.yaml contains a duplicated or misspelled key?
+    files: [kartrix/config.py]
+    symbols: [load_yaml_strict, _UniqueKeyLoader]
+    answer: load_yaml_strict uses a loader that fails on duplicate keys, and the settings models forbid unknown keys, so either raises a ConfigError instead of being silently ignored.
+
+  - id: k37-llm-fallback
+    repo: kartrix
+    kind: flow
+    quick: true
+    question: What happens when a call to the main LLM fails or times out?
+    files: [kartrix/llm/factory.py, kartrix/llm/retry.py]
+    symbols: [get_model_middleware, LazyModelFallbackMiddleware, should_retry_model_call]
+    answer: ModelRetryMiddleware retries transient errors (rate limits, 5xx, dropped connections - not timeouts) with exponential backoff; if the primary still fails, the fallback middleware tries the configured fallback models in order (another NIM model, then Hugging Face), building their clients lazily.
+
+  - id: k38-middleware-order
+    repo: kartrix
+    kind: explain
+    question: Which middleware wraps every tool-using agent, and in what order?
+    files: [kartrix/agent/factory.py]
+    symbols: [agent_middleware]
+    answer: Outermost first - model fallback and retry, then approvals, then the audit middleware, then the budget middleware, and innermost the content guard.
+
+  - id: k39-audit-tool-calls
+    repo: kartrix
+    kind: security
+    question: What is recorded for every tool call the agent makes?
+    files: [kartrix/security/audit.py]
+    symbols: [AuditMiddleware]
+    answer: AuditMiddleware redacts the tool result before the model sees it and appends an audit_log row with the tool, redacted clipped arguments, outcome, duration, output size, number of redacted secrets and notes such as the policy decision.
+
+  - id: k40-audit-append-only
+    repo: kartrix
+    kind: security
+    question: How is the audit log protected against being edited or deleted?
+    files: [migrations/versions/2026_10_06_1920-faaa983951ae_baseline_core_tables.py]
+    answer: The baseline migration adds database triggers that raise an exception on UPDATE, DELETE or TRUNCATE of audit_log, so it is append-only even for the table owner.
+
+  - id: k41-undo
+    repo: kartrix
+    kind: explain
+    question: How does /undo restore my files without touching my own git repository?
+    files: [kartrix/security/checkpoints.py]
+    answer: Before and after every turn or task the workspace is snapshotted into a separate shadow git repository in the per-user data folder (GIT_DIR/GIT_WORK_TREE); /undo restores only the files the entry changed to their earlier content and deletes files it created, asking first if they changed since.
+
+  - id: k42-output-clipping
+    repo: kartrix
+    kind: explain
+    question: What does the agent see when a command prints a huge amount of output?
+    files: [kartrix/tools/terminal_tools.py]
+    symbols: [_clip, format_result]
+    answer: The output is clipped to the first 10,000 and last 20,000 characters with a note about how many were omitted; stderr, timeouts, stops and non-zero exit codes are added to the result.
+
+  - id: k43-edit-file
+    repo: kartrix
+    kind: explain
+    question: What must the text being replaced satisfy when the agent edits a file?
+    files: [kartrix/tools/filesystem_tools.py]
+    symbols: [edit_file]
+    answer: old_string must be non-empty, differ from new_string and match exactly (whitespace included) exactly once unless replace_all is true; new_string may not contain a redacted-secret placeholder.
+
+  - id: k44-headless-approvals
+    repo: kartrix
+    kind: flow
+    question: In a headless run nobody can answer approval prompts — how are they decided?
+    files: [kartrix/headless/policy.py, kartrix/headless/spec.py]
+    symbols: [PolicyApprover, ApprovalPolicy]
+    answer: PolicyApprover answers from the spec's approvals section - commands matching a deny rule are declined, matching an allow rule approved once, MCP tools approved if listed in allow_tools, and everything else declined so the agent can try another way.
+
+  - id: k45-run-exit-codes
+    repo: kartrix
+    kind: explain
+    question: What exit codes does `kartrix run` use?
+    files: [kartrix/headless/runner.py]
+    symbols: [EXIT_CODES, run_headless]
+    answer: 0 completed, 1 failed or error, 2 stopped (budget or kill switch), 3 could not start (invalid spec, configuration, services).
+
+  - id: k46-event-bus
+    repo: kartrix
+    kind: explain
+    question: How do things that happen during a run reach the terminal UI and the headless report?
+    files: [kartrix/core/events.py]
+    symbols: [EventBus, emit, run_scope]
+    answer: The core emits typed Pydantic events on a thread-safe process-wide bus, tagged with the run id from a context variable; front ends subscribe - the REPL renders them, headless mode writes JSON lines and builds its report; a failing subscriber is only logged.
+
+  - id: k47-fast-prompt
+    repo: kartrix
+    kind: flow
+    question: How does the interactive prompt appear before the agent and its libraries are loaded?
+    files: [kartrix/main.py]
+    symbols: [run, in_daemon_thread]
+    answer: main.py imports only Rich, config and the event bus, loads the agent stack in a daemon thread and starts CoreSession while the user types; a command waits only if the core isn't up yet, /help and /exit answer at once.
+
+  - id: k48-logging
+    repo: kartrix
+    kind: config
+    question: How are log records written, and how are secrets kept out of the logs?
+    files: [kartrix/observability/logger.py]
+    symbols: [JSONFormatter, RedactingFormatter, setup_logging]
+    answer: kartrix loggers write one JSON object per line (JSONFormatter, extra fields as keys) to .kartrix/logs/kartrix.jsonl and only warnings to stderr; formatters redact secrets.
+
+  - id: k49-kill-process-tree
+    repo: kartrix
+    kind: explain
+    question: How does Kartrix make sure a command and everything it started are killed?
+    files: [kartrix/tools/process_runner.py]
+    symbols: [run_launch, _create_job, _end_tree]
+    answer: On Windows the process is put in a Job Object with kill-on-close (sandboxed ones start suspended until they are in it); on POSIX it gets its own session/process group that is killed; the tree is ended on timeout, stop or when the command finishes.
+
+  - id: k50-database-url
+    repo: kartrix
+    kind: config
+    question: Where is the database connection configured, and how is its password kept out of logs?
+    files: [kartrix/db/engine.py]
+    symbols: [get_database_url, get_engine]
+    answer: get_database_url reads DATABASE_URL from the environment and requires the postgresql+asyncpg scheme; get_engine creates the async engine with the pool settings and logs the URL rendered with hide_password=True.
+
+  # ── fastapi-template (FastAPI + SQLModel backend, React frontend) ──────────────────────────
+  - id: f01-password-hashing
+    repo: fastapi-template
+    kind: security
+    quick: true
+    question: How are user passwords hashed and verified?
+    files: [backend/app/core/security.py]
+    symbols: [get_password_hash, verify_password]
+    answer: With pwdlib's PasswordHash using Argon2 (and bcrypt for older hashes); verify_password uses verify_and_update, which also returns an upgraded hash when needed.
+
+  - id: f02-access-token
+    repo: fastapi-template
+    kind: explain
+    question: How is the login access token created and how long is it valid?
+    files: [backend/app/core/security.py, backend/app/api/routes/login.py, backend/app/core/config.py]
+    symbols: [create_access_token, login_access_token]
+    answer: create_access_token encodes a JWT with the user id as sub and an exp claim, signed with SECRET_KEY using HS256; login uses ACCESS_TOKEN_EXPIRE_MINUTES, 8 days by default.
+
+  - id: f03-current-user
+    repo: fastapi-template
+    kind: flow
+    quick: true
+    question: How does an endpoint find out which user is calling it?
+    files: [backend/app/api/deps.py]
+    symbols: [get_current_user, CurrentUser]
+    answer: get_current_user (the CurrentUser dependency) takes the bearer token from OAuth2PasswordBearer, decodes the JWT with SECRET_KEY, loads the user by the sub id, and raises 403 for an invalid token, 404 if the user is missing and 400 if inactive.
+
+  - id: f04-superuser-only
+    repo: fastapi-template
+    kind: security
+    question: How are admin-only endpoints restricted to superusers?
+    files: [backend/app/api/deps.py, backend/app/api/routes/users.py]
+    symbols: [get_current_active_superuser]
+    answer: They depend on get_current_active_superuser, which raises 403 "The user doesn't have enough privileges" unless current_user.is_superuser.
+
+  - id: f05-timing-attack
+    repo: fastapi-template
+    kind: security
+    question: How does login avoid revealing whether an email address is registered through response timing?
+    files: [backend/app/crud.py]
+    symbols: [authenticate, DUMMY_HASH]
+    answer: authenticate verifies the password against a dummy Argon2 hash when no user has that email, so the response takes about as long as for an existing user.
+
+  - id: f06-password-recovery
+    repo: fastapi-template
+    kind: flow
+    question: What happens when someone requests a password recovery email?
+    files: [backend/app/api/routes/login.py, backend/app/utils.py]
+    symbols: [recover_password, generate_password_reset_token, generate_reset_password_email]
+    answer: recover_password always returns the same message; only if the user exists it creates a reset JWT (valid EMAIL_RESET_TOKEN_EXPIRE_HOURS, 48 h) and sends an email with a link to the frontend's /reset-password page.
+
+  - id: f07-reset-password
+    repo: fastapi-template
+    kind: flow
+    question: How is the password reset token checked when a new password is submitted?
+    files: [backend/app/api/routes/login.py, backend/app/utils.py]
+    symbols: [reset_password, verify_password_reset_token]
+    answer: reset_password decodes the token with verify_password_reset_token (JWT with SECRET_KEY); an invalid token or unknown user both give 400 "Invalid token", an inactive user 400, otherwise the password is updated via crud.update_user.
+
+  - id: f08-item-permissions
+    repo: fastapi-template
+    kind: security
+    quick: true
+    question: Who may read, update or delete an item?
+    files: [backend/app/api/routes/items.py]
+    symbols: [read_item, update_item, delete_item]
+    answer: Superusers or the item's owner; anyone else gets 403 "Not enough permissions", and a missing item 404.
+
+  - id: f09-items-list
+    repo: fastapi-template
+    kind: explain
+    question: Which items does the items list return for a normal user, and how is it paginated?
+    files: [backend/app/api/routes/items.py]
+    symbols: [read_items]
+    answer: Normal users only get their own items (owner_id = current user), superusers all items; both ordered by created_at descending with skip/limit (default 0/100) and a total count.
+
+  - id: f10-signup
+    repo: fastapi-template
+    kind: flow
+    question: How does open user registration work and what stops duplicate accounts?
+    files: [backend/app/api/routes/users.py, backend/app/crud.py]
+    symbols: [register_user, create_user]
+    answer: POST /users/signup checks get_user_by_email and returns 400 if the email exists, otherwise validates into UserCreate and crud.create_user stores the user with a hashed password.
+
+  - id: f11-delete-self
+    repo: fastapi-template
+    kind: explain
+    question: Can a superuser delete their own account?
+    files: [backend/app/api/routes/users.py]
+    symbols: [delete_user_me]
+    answer: No - DELETE /users/me returns 403 "Super users are not allowed to delete themselves"; normal users are deleted.
+
+  - id: f12-change-password
+    repo: fastapi-template
+    kind: explain
+    question: What is checked when a user changes their own password?
+    files: [backend/app/api/routes/users.py]
+    symbols: [update_password_me]
+    answer: The current password must verify (else 400 "Incorrect password") and the new one must differ from it (else 400); then the new hash is stored.
+
+  - id: f13-email-conflict
+    repo: fastapi-template
+    kind: explain
+    question: What happens if a user changes their email to one another account already uses?
+    files: [backend/app/api/routes/users.py]
+    symbols: [update_user_me]
+    answer: update_user_me returns 409 "User with this email already exists".
+
+  - id: f14-models-constraints
+    repo: fastapi-template
+    kind: locate
+    question: Where are the length limits for user passwords and item titles defined?
+    files: [backend/app/models.py]
+    symbols: [UserCreate, ItemBase]
+    answer: In backend/app/models.py - passwords have min_length 8 and max_length 128 (UserCreate, UserRegister, UpdatePassword), item titles 1-255 characters and descriptions up to 255 (ItemBase).
+
+  - id: f15-cascade-delete
+    repo: fastapi-template
+    kind: explain
+    question: What happens to a user's items when the user is deleted?
+    files: [backend/app/models.py]
+    symbols: [User, Item]
+    answer: They are deleted too - the User.items relationship has cascade_delete=True and Item.owner_id is a foreign key with ondelete CASCADE.
+
+  - id: f16-settings
+    repo: fastapi-template
+    kind: config
+    quick: true
+    question: Where does the backend read its configuration and which values are required?
+    files: [backend/app/core/config.py]
+    symbols: [Settings]
+    answer: backend/app/core/config.py - a pydantic-settings Settings class reading the top-level ../.env; SECRET_KEY, PROJECT_NAME, DATABASE_URL, FIRST_SUPERUSER and FIRST_SUPERUSER_PASSWORD are required.
+
+  - id: f17-default-secrets
+    repo: fastapi-template
+    kind: security
+    question: What stops the app from being deployed with default secrets like "changethis"?
+    files: [backend/app/core/config.py]
+    symbols: [_enforce_non_default_secrets, _check_default_secret]
+    answer: A model validator checks SECRET_KEY, the database password and FIRST_SUPERUSER_PASSWORD; a value of "changethis" only warns in development and raises an error otherwise.
+
+  - id: f18-db-url-driver
+    repo: fastapi-template
+    kind: config
+    question: How is the database URL adjusted to the driver the backend uses?
+    files: [backend/app/core/config.py]
+    symbols: [_use_psycopg_driver]
+    answer: A field validator rewrites postgres:// or postgresql:// URLs to postgresql+psycopg://.
+
+  - id: f19-first-superuser
+    repo: fastapi-template
+    kind: flow
+    question: How is the first admin account created?
+    files: [backend/app/core/db.py, backend/app/initial_data.py]
+    symbols: [init_db]
+    answer: initial_data.py calls init_db, which creates a superuser from FIRST_SUPERUSER / FIRST_SUPERUSER_PASSWORD if no user with that email exists; tables come from Alembic migrations.
+
+  - id: f20-cors
+    repo: fastapi-template
+    kind: security
+    question: Which origins may call the API from a browser?
+    files: [backend/app/main.py]
+    answer: CORSMiddleware allows only settings.FRONTEND_HOST (default http://localhost:5173), with credentials, all methods and headers.
+
+  - id: f21-private-routes
+    repo: fastapi-template
+    kind: security
+    question: When is the private user-creation endpoint available?
+    files: [backend/app/api/main.py, backend/app/api/routes/private.py]
+    answer: The private router (POST /private/users/) is only included when FASTAPI_ENV is "development".
+
+  - id: f22-emails
+    repo: fastapi-template
+    kind: explain
+    question: How are emails rendered and sent, and when is sending enabled?
+    files: [backend/app/utils.py, backend/app/core/config.py]
+    symbols: [render_email_template, send_email, emails_enabled]
+    answer: Jinja2 templates from email-templates/ are rendered and sent with the emails library over SMTP (TLS or SSL, optional login); emails_enabled is true only when SMTP_HOST and EMAILS_FROM_EMAIL are set.
+
+  - id: f23-health-check
+    repo: fastapi-template
+    kind: locate
+    question: Where is the health check endpoint?
+    files: [backend/app/api/routes/utils.py]
+    symbols: [health_check]
+    answer: GET /utils/health-check/ in backend/app/api/routes/utils.py returns true.
+
+  - id: f24-openapi-ids
+    repo: fastapi-template
+    kind: explain
+    question: How are the operation ids of the OpenAPI schema generated for the frontend client?
+    files: [backend/app/main.py]
+    symbols: [custom_generate_unique_id]
+    answer: custom_generate_unique_id names each route "<first tag>-<route name>", e.g. items-read_items, which the generated TypeScript client uses.
+
+  - id: f25-frontend-token
+    repo: fastapi-template
+    kind: flow
+    question: Where does the frontend keep the login token and how is it sent with API requests?
+    files: [frontend/src/hooks/useAuth.ts, frontend/src/main.tsx]
+    symbols: [useAuth, isLoggedIn]
+    answer: useAuth's login stores access_token in localStorage; main.tsx configures the API client with auth reading that token, so it is sent with every request.
+
+  - id: f26-frontend-401
+    repo: fastapi-template
+    kind: flow
+    question: What does the frontend do when the API answers 401 or 403?
+    files: [frontend/src/main.tsx]
+    symbols: [handleApiError]
+    answer: handleApiError (on the React Query query and mutation caches) removes the token from localStorage and redirects to /login.
+
+  - id: f27-route-guard
+    repo: fastapi-template
+    kind: flow
+    question: How are pages that need a login protected in the frontend?
+    files: [frontend/src/routes/_layout.tsx, frontend/src/hooks/useAuth.ts]
+    symbols: [isLoggedIn]
+    answer: The _layout route's beforeLoad throws a redirect to /login when isLoggedIn() (a token in localStorage) is false; login/signup pages redirect logged-in users to /.
+
+  - id: f28-admin-page-guard
+    repo: fastapi-template
+    kind: security
+    question: How does the frontend keep normal users out of the admin page?
+    files: [frontend/src/routes/_layout/admin.tsx]
+    answer: The admin route's beforeLoad fetches the current user (readUserMe) and redirects unless user.is_superuser.
+
+  - id: f29-signup-form
+    repo: fastapi-template
+    kind: explain
+    question: Which checks does the sign-up form run before submitting?
+    files: [frontend/src/routes/signup.tsx]
+    answer: A zod schema requires a valid email, a full name, a password of at least 8 characters and a matching confirm_password ("The passwords don't match").
+
+  - id: f30-error-messages
+    repo: fastapi-template
+    kind: explain
+    question: How does the frontend turn an API error into the message shown to the user?
+    files: [frontend/src/utils.ts]
+    symbols: [handleError, extractErrorMessage]
+    answer: extractErrorMessage reads detail from an AxiosError response - the first validation error's msg for a list, the string itself otherwise, else the error message or "Something went wrong."; handleError shows it as a toast.
+
+  # ── realworld-express (Express + Prisma, TypeScript) ──────────────────────────────────────
+  - id: r01-jwt-header
+    repo: realworld-express
+    kind: security
+    quick: true
+    question: How is the JWT read from incoming requests and which header formats are accepted?
+    files: [src/app/routes/auth/auth.ts]
+    symbols: [getTokenFromHeaders]
+    answer: getTokenFromHeaders takes the second part of the Authorization header when it starts with "Token" or "Bearer"; express-jwt verifies it with HS256 and JWT_SECRET (auth.required / auth.optional).
+
+  - id: r02-token-generation
+    repo: realworld-express
+    kind: explain
+    question: What is inside the JWT the API issues and when does it expire?
+    files: [src/app/routes/auth/token.utils.ts]
+    symbols: [generateToken]
+    answer: "generateToken signs a payload { user: { id } } with JWT_SECRET (default 'superSecret') and expiresIn 60d."
+
+  - id: r03-default-secret
+    repo: realworld-express
+    kind: security
+    question: What JWT secret is used if none is configured?
+    files: [src/app/routes/auth/auth.ts, src/app/routes/auth/token.utils.ts]
+    answer: The hard-coded fallback 'superSecret' when process.env.JWT_SECRET is not set, both for signing and verifying.
+
+  - id: r04-password-hashing
+    repo: realworld-express
+    kind: security
+    question: How are passwords stored and checked at login?
+    files: [src/app/routes/auth/auth.service.ts]
+    symbols: [createUser, login]
+    answer: bcryptjs hashes them with 10 salt rounds on register and update; login compares with bcrypt.compare and fails with 403 "email or password is invalid".
+
+  - id: r05-register-validation
+    repo: realworld-express
+    kind: explain
+    question: Which errors can registering a new user return?
+    files: [src/app/routes/auth/auth.service.ts]
+    symbols: [createUser]
+    answer: 422 errors - "can't be blank" for a missing email, username or password, and "has already been taken" for an email or username that is already used.
+
+  - id: r06-error-handler
+    repo: realworld-express
+    kind: flow
+    quick: true
+    question: How are errors turned into HTTP responses?
+    files: [src/main.ts, src/app/models/http-exception.model.ts]
+    symbols: [HttpException]
+    answer: The error middleware in main.ts returns 401 "missing authorization credentials" for UnauthorizedError, the errorCode and message of an HttpException, and 500 for anything else.
+
+  - id: r07-routes
+    repo: realworld-express
+    kind: locate
+    question: Where are all API routes mounted and under which prefix?
+    files: [src/app/routes/routes.ts]
+    answer: routes.ts combines the tag, article, profile and auth controllers into one router mounted under /api.
+
+  - id: r08-article-slug
+    repo: realworld-express
+    kind: explain
+    quick: true
+    question: How is an article's slug built and what happens if it already exists?
+    files: [src/app/routes/article/article.service.ts]
+    symbols: [createArticle]
+    answer: slugify(title) plus "-" and the author id; if an article with that slug exists the API returns 422 "title must be unique".
+
+  - id: r09-article-filters
+    repo: realworld-express
+    kind: explain
+    question: Which query filters does the article list support?
+    files: [src/app/routes/article/article.service.ts]
+    symbols: [buildFindAllQuery, getArticles]
+    answer: author (username), tag and favorited (username), with offset and limit (default 0 and 10); results are limited to demo authors or the current user's own articles.
+
+  - id: r10-feed
+    repo: realworld-express
+    kind: explain
+    question: Which articles appear in a user's feed?
+    files: [src/app/routes/article/article.service.ts, src/app/routes/article/article.controller.ts]
+    symbols: [getFeed]
+    answer: Articles whose author is followed by the current user (GET /articles/feed, auth required), newest first with offset/limit (default 10).
+
+  - id: r11-article-mapper
+    repo: realworld-express
+    kind: explain
+    question: How are the favorited flag and favorites count of an article computed in responses?
+    files: [src/app/routes/article/article.mapper.ts]
+    symbols: [articleMapper]
+    answer: articleMapper sets favorited if any of favoritedBy has the current user's id and favoritesCount to favoritedBy.length.
+
+  - id: r12-following-flag
+    repo: realworld-express
+    kind: explain
+    question: How does a profile response know whether the current user follows that person?
+    files: [src/app/routes/profile/profile.utils.ts, src/app/routes/article/author.mapper.ts]
+    symbols: [profileMapper, authorMapper]
+    answer: The mappers set following to true when an id is given and the user's followedBy list contains it, otherwise false.
+
+  - id: r13-follow
+    repo: realworld-express
+    kind: flow
+    question: What does following another user change in the database?
+    files: [src/app/routes/profile/profile.service.ts]
+    symbols: [followUser, unfollowUser]
+    answer: followUser updates the followed user and connects the current user to its followedBy relation; unfollowUser disconnects it.
+
+  - id: r14-delete-comment
+    repo: realworld-express
+    kind: security
+    question: Who can delete a comment and what errors can occur?
+    files: [src/app/routes/article/article.service.ts]
+    symbols: [deleteComment]
+    answer: Only its author - the comment is looked up by id and author id; 404 if not found, 403 "You are not authorized to delete this comment" if the author differs.
+
+  - id: r15-update-article
+    repo: realworld-express
+    kind: flow
+    question: What happens to the slug and tags when an article's title is edited?
+    files: [src/app/routes/article/article.service.ts]
+    symbols: [updateArticle, disconnectArticlesTags]
+    answer: Only the author may update (else 403); a new title gives a new slug that must be unique (422), the old tags are disconnected and the new tag list connected.
+
+  - id: r16-tags
+    repo: realworld-express
+    kind: explain
+    question: Which tags does the tags endpoint return?
+    files: [src/app/routes/tag/tag.service.ts]
+    symbols: [getTags]
+    answer: Up to 10 tag names used on articles by demo authors or the current user, ordered by how many articles use them.
+
+  - id: r17-schema
+    repo: realworld-express
+    kind: locate
+    quick: true
+    question: Where is the database schema defined and which fields must be unique?
+    files: [src/prisma/schema.prisma]
+    answer: In the Prisma schema src/prisma/schema.prisma - Article.slug, Tag.name, User.email and User.username are unique; comments and articles cascade on delete.
+
+  - id: r18-prisma-client
+    repo: realworld-express
+    kind: explain
+    question: Why is the Prisma client stored on the global object?
+    files: [src/prisma/prisma-client.ts]
+    answer: To avoid creating multiple PrismaClient instances in development (hot reload); in development the client is kept on global.prisma and reused.
+
+  - id: r19-test-mocks
+    repo: realworld-express
+    kind: test
+    question: How do the service tests run without a real database?
+    files: [src/tests/prisma-mock.ts]
+    answer: prisma-mock.ts replaces the prisma client module with jest-mock-extended's mockDeep<PrismaClient>() and resets it before each test.
+
+  - id: r20-cors-static
+    repo: realworld-express
+    kind: config
+    question: Which middleware does the Express app install and on which port does it listen?
+    files: [src/main.ts]
+    answer: cors(), body-parser JSON and urlencoded, the API routes, express.static for assets, then the error handler; it listens on process.env.PORT or 3000.

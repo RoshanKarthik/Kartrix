@@ -1,0 +1,15 @@
+id: ts-shop-discount-tax
+app: ts-shop-api
+stack: typescript
+category: bugfix
+quick: true
+task: >-
+  With the coupon SAVE10, a cart holding one product of 5000 cents should cost 5000 - 500 (discount) + 8 %
+  tax on 4500 = 4860 cents, but GET /cart?coupon=SAVE10 says 4900. Tax must be charged on the subtotal
+  after the discount. Fix it.
+check:
+  - name: tests
+    run: ["{node}", "--test"]
+expect:
+  tools: [read_file, edit_file]
+notes: cartTotal charges tax on the undiscounted subtotal; planted by setup/.

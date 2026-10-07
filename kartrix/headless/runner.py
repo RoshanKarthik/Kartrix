@@ -76,6 +76,7 @@ def build_report(spec: RunSpec, spec_path: str, outcome: Any, events: list[Any],
         "model": f"{settings.llm.provider}/{settings.llm.model}",
         "sandbox": (sb.name if (sb := get_sandbox()) else None),
         "budget": _limits(spec).model_dump(),
+        "startup": getattr(outcome, "startup", None) or {},
         "usage": outcome.usage.model_dump() if outcome else None,
         "answer": outcome.answer if outcome else None,
         "cached": outcome.cached if outcome else False,
@@ -130,8 +131,11 @@ async def _run(spec: RunSpec) -> Any:
         if spec.mcp:
             core.rebuild_agent()
         if spec.mode == "ask":
-            return await core.ask(spec.task, _limits(spec))
-        return await core.plan(spec.task, _limits(spec), resume="same_goal", plan_only=spec.plan_only)
+            outcome = await core.ask(spec.task, _limits(spec))
+        else:
+            outcome = await core.plan(spec.task, _limits(spec), resume="same_goal", plan_only=spec.plan_only)
+        outcome.startup = dict(core.startup_timings)
+        return outcome
     finally:
         await core.close()
 

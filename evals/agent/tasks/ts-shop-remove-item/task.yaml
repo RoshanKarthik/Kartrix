@@ -1,0 +1,13 @@
+id: ts-shop-remove-item
+app: ts-shop-api
+stack: typescript
+category: feature
+task: >-
+  Add DELETE /cart/items/:productId to the shop API: it removes that product's line from the cart and
+  answers 204 with no body; if the product is not in the cart it answers 404 with {"error": "not in cart"}.
+  Add tests and document the endpoint in the README.
+check:
+  - name: tests
+    run: ["{node}", "--test"]
+expect:
+  tools: [read_file, edit_file]

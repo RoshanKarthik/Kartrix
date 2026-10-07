@@ -1,0 +1,13 @@
+id: py-notes-wordcount
+app: py-notes-cli
+stack: python
+category: bugfix
+task: >-
+  "notes stats" reports the wrong number of words when a note has several spaces in a row, tabs or line
+  breaks — "two  words" counts as 3 words. Fix the word count.
+check:
+  - name: tests
+    run: ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"]
+expect:
+  tools: [read_file, edit_file]
+notes: word_count splits on a single space; planted by setup/.

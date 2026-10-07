@@ -5,6 +5,8 @@
   (see :mod:`kartrix.security.kill_switch`). Imports almost nothing, so it works instantly.
 - ``kartrix run --spec <file>`` — one headless run (no prompts; approvals from the spec), JSON report
   and exit code — see :mod:`kartrix.headless.runner`.
+- ``kartrix eval rag|agent|all|calibrate|report`` — the agent and RAG eval suites, from a source checkout
+  (see :mod:`kartrix.evals.cli`).
 - ``kartrix sandbox [status|check|reset]`` — which sandbox runs commands here (:mod:`kartrix.sandbox`),
   a live check of what it blocks, and (Windows) removing the folder access it was given.
 """
@@ -53,6 +55,9 @@ def main(argv: list[str] | None = None) -> int:
         "what it can and can't do. reset (Windows): remove every folder permission given to Kartrix's sandboxes.",
     )
     sandbox.add_argument("action", nargs="?", choices=["status", "check", "reset"], default="status")
+    from kartrix.evals.cli import add_parser as add_eval_parser
+
+    add_eval_parser(commands)
     args = parser.parse_args(argv)
 
     if args.command == "run":
@@ -61,6 +66,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_headless(args.spec, args.report, args.events, args.quiet)
     if args.command == "sandbox":
         return _sandbox(args.action)
+    if args.command == "eval":
+        from kartrix.evals.cli import run_eval
+
+        return run_eval(args)
 
     if args.command == "stop":
         from kartrix.security.kill_switch import request_stop, stop_file

@@ -306,6 +306,14 @@ async def remove_file(repo_root: str | Path, path: str | Path) -> None:
     logger.info("Removed file from index", extra={"path": rel})
 
 
+async def remove_repo(repo_root: str | Path) -> int:
+    """Drop the whole index of ``repo_root`` (e.g. a throwaway eval workspace); returns the files removed."""
+    root_key = repo_key(repo_root)
+    async with _lock, session_scope() as s:
+        result = await s.execute(delete(CodeFile).where(CodeFile.repo_root == root_key))
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
 async def indexed_files(repo_root: str | Path) -> list[Any]:
     """(path, chunk_count, indexed_at) of every file indexed for ``repo_root``, sorted by path."""
     root_key = repo_key(repo_root)

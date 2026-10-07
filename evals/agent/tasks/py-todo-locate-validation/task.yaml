@@ -1,0 +1,14 @@
+id: py-todo-locate-validation
+app: py-todo-api
+stack: python
+category: locate
+permissions: read_only
+quick: true
+task: >-
+  Which function checks the request body when a new todo is created, and in which file is it? Don't change
+  anything.
+answer:
+  contains_all: ["validate_new_todo", "service.py"]
+  reference: validate_new_todo in todo/service.py (called from handle in todo/app.py for POST /todos).
+expect:
+  unchanged: ["*"]

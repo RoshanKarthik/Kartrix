@@ -1,0 +1,14 @@
+id: ts-utils-refactor-duration
+app: ts-text-utils
+stack: typescript
+category: refactor
+task: >-
+  Refactor src/duration.ts: move the tokenizing into an exported function tokenizeDuration(input) that
+  returns the [value, unit] pairs — tokenizeDuration("1h30m") is [[1, "h"], [30, "m"]] — and throws on
+  invalid input; parseDuration must use it. The behaviour of parseDuration must not change.
+check:
+  - name: tests
+    run: ["{node}", "--test"]
+expect:
+  tools: [read_file, edit_file]
+  unchanged: ["tests/utils.test.ts"]

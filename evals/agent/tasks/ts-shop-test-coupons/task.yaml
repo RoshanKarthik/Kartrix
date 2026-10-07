@@ -1,0 +1,24 @@
+id: ts-shop-test-coupons
+app: ts-shop-api
+stack: typescript
+category: test
+task: >-
+  Write tests for applyCoupon in src/pricing.ts, in a new file tests/coupons.test.ts: percentage coupons,
+  fixed-amount coupons, the minimum subtotal, a discount larger than the subtotal, and no coupon at all.
+  Don't change the code under src/.
+check:
+  - name: tests pass
+    run: ["{node}", "--test"]
+  - name: tests/coupons.test.ts exists
+    run: ["{node}", "-e", "process.exit(require('node:fs').existsSync('tests/coupons.test.ts') ? 0 : 1)"]
+  - name: the tests catch planted bugs
+    run: ["{python}", ".eval/mutation_check.py",
+          "--mutant", "src/pricing.ts=.eval/mutants/pricing_no_minimum.ts",
+          "--mutant", "src/pricing.ts=.eval/mutants/pricing_no_cap.ts",
+          "--mutant", "src/pricing.ts=.eval/mutants/pricing_percent_scale.ts",
+          "--", "{node}", "--test"]
+    timeout: 300
+expect:
+  tools: [read_file, write_file]
+  unchanged: ["src/*"]
+notes: Scored by mutation testing — the new tests must fail on three planted bugs in applyCoupon.

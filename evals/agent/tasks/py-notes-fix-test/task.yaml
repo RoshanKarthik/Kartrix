@@ -1,0 +1,16 @@
+id: py-notes-fix-test
+app: py-notes-cli
+stack: python
+category: test
+task: >-
+  The test suite fails in tests/test_formatting.py. The code in notes/formatting.py is correct (see its
+  docstrings) — fix the failing test, not the code. Keep testing what the test is about.
+check:
+  - name: tests
+    run: ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"]
+  - name: the tag test is still there
+    run: ["{python}", ".eval/check_fix_test.py"]
+expect:
+  tools: [read_file, edit_file]
+  unchanged: ["notes/*"]
+notes: setup/ adds a test expecting tags in input order, while fmt_note sorts and lower-cases them.

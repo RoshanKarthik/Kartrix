@@ -93,6 +93,10 @@ async def test_ask_run_with_policy_approvals(ws: Path, monkeypatch: pytest.Monke
     # A declined command never reaches the tool: it is in "approvals", not in the tool-call counts.
     assert report["tool_calls"] == {"total": 1, "by_tool": {"run_command": 1}, "by_outcome": {"ok": 1}}
     assert report["usage"]["tool_calls"] == 1 and report["files_changed"] == ["ran.txt"]
+    assert set(report["startup"]) >= {"llm", "agent", "index"}  # startup phases, for the evals
+    started = next(e for e in seen if e.type == "tool_call_started")
+    finished = next(e for e in seen if e.type == "tool_call_finished")
+    assert started.args == {"command": "python x.py"} and finished.output_chars
 
     kinds = [e.type for e in seen]
     assert kinds.index("run_started") < kinds.index("approval_requested") < kinds.index("tool_call_started")

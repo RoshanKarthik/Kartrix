@@ -1,0 +1,14 @@
+id: py-todo-refactor-json
+app: py-todo-api
+stack: python
+category: refactor
+task: >-
+  todo/app.py repeats json.dumps(...).encode() and the Content-Type header in every branch. Refactor it:
+  add a helper json_response(status, payload) in todo/app.py that returns the (status, headers, body)
+  tuple, and use it for every JSON response. The behaviour must not change and the tests must pass.
+check:
+  - name: tests
+    run: ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"]
+expect:
+  tools: [read_file, edit_file]
+  unchanged: ["tests/test_app.py", "tests/test_storage.py", "tests/conftest.py"]

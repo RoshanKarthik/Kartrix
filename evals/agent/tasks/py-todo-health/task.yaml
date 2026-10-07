@@ -1,0 +1,13 @@
+id: py-todo-health
+app: py-todo-api
+stack: python
+category: feature
+quick: true
+task: >-
+  Add a GET /health endpoint to the todo API that answers status 200 with the JSON body {"status": "ok"}.
+  Add a test for it.
+check:
+  - name: tests
+    run: ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"]
+expect:
+  tools: [read_file, edit_file]

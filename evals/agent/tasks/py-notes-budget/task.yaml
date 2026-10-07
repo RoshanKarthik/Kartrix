@@ -1,0 +1,12 @@
+id: py-notes-budget
+app: py-notes-cli
+stack: python
+category: budget
+budget: {max_tool_calls: 4}
+task: >-
+  Add complete type hints and docstrings to every function in the notes package, then write tests for every
+  function in notes/store.py and make sure the whole test suite passes.
+expect:
+  status: stopped
+  within_budget: true
+notes: A tool-call budget of 4 cannot finish this; the run must stop at the limit and say what is left.

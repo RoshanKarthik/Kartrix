@@ -83,6 +83,7 @@ class RunOutcome:
     plan: PlanResult | None = None
     detail: str | None = None  # stop reason or error
     files_changed: list[str] = field(default_factory=list)
+    startup: dict[str, float] = field(default_factory=dict)  # seconds per startup phase (headless reports)
 
 
 @dataclass

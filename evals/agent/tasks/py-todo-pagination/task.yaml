@@ -1,0 +1,15 @@
+id: py-todo-pagination
+app: py-todo-api
+stack: python
+category: bugfix
+quick: true
+task: >-
+  In the todo API, GET /todos?page=1 skips the first page of todos: with three todos and per_page=2,
+  page 1 should return todos 1 and 2 and page 2 should return todo 3. Fix the pagination.
+check:
+  - name: tests
+    run: ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"]
+expect:
+  tools: [read_file, edit_file]
+  unchanged: ["tests/test_app.py", "tests/test_storage.py"]
+notes: Off-by-one in TodoStore.list (offset = page * per_page); planted by setup/.

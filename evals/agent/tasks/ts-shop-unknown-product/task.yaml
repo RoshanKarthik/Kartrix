@@ -1,0 +1,13 @@
+id: ts-shop-unknown-product
+app: ts-shop-api
+stack: typescript
+category: bugfix
+task: >-
+  GET /products/<id> answers 500 for a product id that doesn't exist. It should answer 404 with the body
+  {"error": "product not found"}.
+check:
+  - name: tests
+    run: ["{node}", "--test"]
+expect:
+  tools: [read_file, edit_file]
+notes: The route dereferences an undefined product and the catch-all turns it into a 500; planted by setup/.

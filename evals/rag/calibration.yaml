@@ -1,0 +1,180 @@
+# Hand-labelled items to calibrate the LLM judge (kartrix eval calibrate).
+# faithful: every claim in the answer is supported by the context.  relevant: the answer addresses the question.
+# Unfaithful answers change one or two facts of a correct one (the hard case for a judge); irrelevant answers
+# are true to the context but answer a different question. Labels by the Kartrix maintainers — add your own.
+items:
+  - id: c01
+    question: How long is the access token valid?
+    context:
+      - "backend/app/core/config.py: ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8  # 60 minutes * 24 hours * 8 days = 8 days"
+      - "backend/app/api/routes/login.py: access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)"
+    answer: The access token is valid for 8 days by default (ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 8 in config.py), used by the login route.
+    faithful: true
+    relevant: true
+
+  - id: c02
+    question: How long is the access token valid?
+    context:
+      - "backend/app/core/config.py: ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8  # 60 minutes * 24 hours * 8 days = 8 days"
+      - "backend/app/api/routes/login.py: access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)"
+    answer: The access token is valid for 30 minutes by default and is refreshed automatically by a refresh-token endpoint.
+    faithful: false
+    relevant: true
+    note: duration changed, refresh endpoint invented
+
+  - id: c03
+    question: How are passwords hashed?
+    context:
+      - "backend/app/core/security.py: password_hash = PasswordHash((Argon2Hasher(), BcryptHasher(),))"
+      - "def get_password_hash(password: str) -> str:\n    return password_hash.hash(password)"
+    answer: Passwords are hashed with pwdlib's PasswordHash using Argon2, with bcrypt also supported.
+    faithful: true
+    relevant: true
+
+  - id: c04
+    question: How are passwords hashed?
+    context:
+      - "backend/app/core/security.py: password_hash = PasswordHash((Argon2Hasher(), BcryptHasher(),))"
+      - "def get_password_hash(password: str) -> str:\n    return password_hash.hash(password)"
+    answer: Passwords are hashed with SHA-256 and a per-user salt stored in a separate salts table.
+    faithful: false
+    relevant: true
+
+  - id: c05
+    question: How are passwords hashed?
+    context:
+      - "backend/app/core/security.py: ALGORITHM = \"HS256\""
+      - "def create_access_token(subject, expires_delta):\n    expire = datetime.now(UTC) + expires_delta\n    to_encode = {\"exp\": expire, \"sub\": str(subject)}\n    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)"
+    answer: Access tokens are JWTs with an exp and sub claim, signed with the SECRET_KEY using HS256.
+    faithful: true
+    relevant: false
+    note: true to the context, but about tokens, not passwords
+
+  - id: c06
+    question: What happens when the user asks `kartrix stop`?
+    context:
+      - "kartrix/security/kill_switch.py: def request_stop() -> float:\n    \"\"\"Ask every Kartrix run in progress on this machine (for this user) to stop. Returns the time.\"\"\"\n    now = time.time()\n    path = stop_file()\n    ... tmp.write_text(repr(now)); tmp.replace(path)"
+      - "Every run that started before that moment stops (checked before each model/tool call and every half second while a command runs); runs started later are unaffected, so the file never needs clearing."
+    answer: kartrix stop writes the current time into a stop file; runs that started before it stop at their next check (before each model or tool call, or within half a second while a command runs), and later runs are unaffected.
+    faithful: true
+    relevant: true
+
+  - id: c07
+    question: What happens when the user asks `kartrix stop`?
+    context:
+      - "kartrix/security/kill_switch.py: def request_stop() -> float:\n    \"\"\"Ask every Kartrix run in progress on this machine (for this user) to stop. Returns the time.\"\"\"\n    now = time.time()\n    path = stop_file()\n    ... tmp.write_text(repr(now)); tmp.replace(path)"
+      - "Every run that started before that moment stops (checked before each model/tool call and every half second while a command runs); runs started later are unaffected, so the file never needs clearing."
+    answer: kartrix stop sends SIGKILL to every Kartrix process on the machine, and the stop file must be deleted manually before Kartrix can run again.
+    faithful: false
+    relevant: true
+
+  - id: c08
+    question: Which tools does a test task agent get?
+    context:
+      - "kartrix/tasks/executor.py: _TOOLS_BY_TYPE = {\"design\": [*READ_TOOLS, write_file, edit_file], \"implement\": [*READ_TOOLS, *WRITE_TOOLS], \"test\": [*READ_TOOLS, *WRITE_TOOLS, run_command], \"review\": [*READ_TOOLS, write_file, edit_file], \"integrate\": [*READ_TOOLS, *WRITE_TOOLS, run_command], \"configure\": [*READ_TOOLS, *WRITE_TOOLS]}"
+    answer: A test task gets the read tools, all write tools and run_command.
+    faithful: true
+    relevant: true
+
+  - id: c09
+    question: Which tools does a test task agent get?
+    context:
+      - "kartrix/tasks/executor.py: _TOOLS_BY_TYPE = {\"design\": [*READ_TOOLS, write_file, edit_file], \"implement\": [*READ_TOOLS, *WRITE_TOOLS], \"test\": [*READ_TOOLS, *WRITE_TOOLS, run_command], \"review\": [*READ_TOOLS, write_file, edit_file], \"integrate\": [*READ_TOOLS, *WRITE_TOOLS, run_command], \"configure\": [*READ_TOOLS, *WRITE_TOOLS]}"
+    answer: A test task gets only the read tools, so it cannot run commands; only integrate tasks may use run_command.
+    faithful: false
+    relevant: true
+
+  - id: c10
+    question: Which tools does a test task agent get?
+    context:
+      - "kartrix/tasks/executor.py: _TOOLS_BY_TYPE = {\"design\": [*READ_TOOLS, write_file, edit_file], \"implement\": [*READ_TOOLS, *WRITE_TOOLS], \"test\": [*READ_TOOLS, *WRITE_TOOLS, run_command], \"review\": [*READ_TOOLS, write_file, edit_file], \"integrate\": [*READ_TOOLS, *WRITE_TOOLS, run_command], \"configure\": [*READ_TOOLS, *WRITE_TOOLS]}"
+    answer: Design and review tasks may write files with write_file and edit_file but cannot append to files.
+    faithful: true
+    relevant: false
+
+  - id: c11
+    question: Who can delete a comment?
+    context:
+      - "src/app/routes/article/article.service.ts: export const deleteComment = async (id: number, userId: number) => { const comment = await prisma.comment.findFirst({ where: { id, author: { id: userId } } ... }); if (!comment) { throw new HttpException(404, {}); } if (comment.author.id !== userId) { throw new HttpException(403, { message: 'You are not authorized to delete this comment' }); } await prisma.comment.delete({ where: { id } }); };"
+    answer: Only the comment's author; otherwise the API answers 404 when the comment isn't found for that author, or 403 with "You are not authorized to delete this comment".
+    faithful: true
+    relevant: true
+
+  - id: c12
+    question: Who can delete a comment?
+    context:
+      - "src/app/routes/article/article.service.ts: export const deleteComment = async (id: number, userId: number) => { const comment = await prisma.comment.findFirst({ where: { id, author: { id: userId } } ... }); if (!comment) { throw new HttpException(404, {}); } if (comment.author.id !== userId) { throw new HttpException(403, { message: 'You are not authorized to delete this comment' }); } await prisma.comment.delete({ where: { id } }); };"
+    answer: The comment's author or the author of the article it belongs to; admins can delete any comment.
+    faithful: false
+    relevant: true
+
+  - id: c13
+    question: What exit code does `kartrix run` return when the budget stops the run?
+    context:
+      - "kartrix/headless/runner.py: EXIT_CODES = {\"completed\": 0, \"failed\": 1, \"error\": 1, \"stopped\": 2, \"not_started\": 3}"
+      - "Exit codes: 0 completed · 1 failed (a task failed, or the agent raised) · 2 stopped (budget limit or kill switch) · 3 could not start (invalid spec, configuration, services)."
+    answer: It exits with code 2 (stopped), the same as for the kill switch.
+    faithful: true
+    relevant: true
+
+  - id: c14
+    question: What exit code does `kartrix run` return when the budget stops the run?
+    context:
+      - "kartrix/headless/runner.py: EXIT_CODES = {\"completed\": 0, \"failed\": 1, \"error\": 1, \"stopped\": 2, \"not_started\": 3}"
+      - "Exit codes: 0 completed · 1 failed (a task failed, or the agent raised) · 2 stopped (budget limit or kill switch) · 3 could not start (invalid spec, configuration, services)."
+    answer: It exits with code 1, because running out of budget counts as a failed run.
+    faithful: false
+    relevant: true
+
+  - id: c15
+    question: What exit code does `kartrix run` return when the budget stops the run?
+    context:
+      - "kartrix/headless/runner.py: EXIT_CODES = {\"completed\": 0, \"failed\": 1, \"error\": 1, \"stopped\": 2, \"not_started\": 3}"
+      - "Exit codes: 0 completed · 1 failed (a task failed, or the agent raised) · 2 stopped (budget limit or kill switch) · 3 could not start (invalid spec, configuration, services)."
+    answer: An invalid spec, a configuration problem or an unavailable service makes the run exit with code 3.
+    faithful: true
+    relevant: false
+
+  - id: c16
+    question: Which origins may call the API from a browser?
+    context:
+      - "backend/app/main.py: app.add_middleware(CORSMiddleware, allow_origins=[settings.FRONTEND_HOST], allow_credentials=True, allow_methods=[\"*\"], allow_headers=[\"*\"])"
+      - "backend/app/core/config.py: FRONTEND_HOST: str = \"http://localhost:5173\""
+    answer: Only the configured FRONTEND_HOST (http://localhost:5173 by default), with credentials allowed.
+    faithful: true
+    relevant: true
+
+  - id: c17
+    question: Which origins may call the API from a browser?
+    context:
+      - "backend/app/main.py: app.add_middleware(CORSMiddleware, allow_origins=[settings.FRONTEND_HOST], allow_credentials=True, allow_methods=[\"*\"], allow_headers=[\"*\"])"
+      - "backend/app/core/config.py: FRONTEND_HOST: str = \"http://localhost:5173\""
+    answer: Any origin is allowed (allow_origins is "*"), but only GET and POST requests.
+    faithful: false
+    relevant: true
+
+  - id: c18
+    question: Which origins may call the API from a browser?
+    context:
+      - "backend/app/main.py: app.add_middleware(CORSMiddleware, allow_origins=[settings.FRONTEND_HOST], allow_credentials=True, allow_methods=[\"*\"], allow_headers=[\"*\"])"
+      - "backend/app/main.py: app.include_router(api_router, prefix=settings.API_V1_STR)"
+    answer: The API routes are mounted under the API_V1_STR prefix.
+    faithful: true
+    relevant: false
+
+  - id: c19
+    question: How is the JWT read from requests?
+    context:
+      - "src/app/routes/auth/auth.ts: const getTokenFromHeaders = (req) => { if ((req.headers.authorization && req.headers.authorization.split(' ')[0] === 'Token') || (req.headers.authorization && req.headers.authorization.split(' ')[0] === 'Bearer')) { return req.headers.authorization.split(' ')[1]; } return null; };"
+    answer: From a cookie named jwt, which is set as HttpOnly at login.
+    faithful: false
+    relevant: true
+
+  - id: c20
+    question: How is the JWT read from requests?
+    context:
+      - "src/app/routes/auth/auth.ts: const getTokenFromHeaders = (req) => { if ((req.headers.authorization && req.headers.authorization.split(' ')[0] === 'Token') || (req.headers.authorization && req.headers.authorization.split(' ')[0] === 'Bearer')) { return req.headers.authorization.split(' ')[1]; } return null; };"
+    answer: Passwords are compared with bcrypt and the user gets a token valid for 60 days.
+    faithful: false
+    relevant: false
+    note: neither in the context nor about the question

@@ -172,6 +172,10 @@ def classify_outcome(text: str, status: str | None = None) -> str:
         return "declined"
     if head.startswith("Error: stopped"):
         return "stopped"
+    if head.startswith("Error invoking tool"):  # the arguments didn't match the tool's schema
+        return "invalid_args"
+    if head.startswith("Error: ") and "is not a valid tool" in head:
+        return "unknown_tool"
     if head.startswith("Error") or status == "error":
         return "error"
     return "ok"
@@ -196,6 +200,7 @@ class AuditMiddleware(AgentMiddleware):
                 tool=call.get("name", "?"),
                 target=next((str(args[k])[:300] for k in _TARGET_ARGS if args.get(k)), None),
                 task_key=scope_ids().get("task_key"),
+                args=redact_json(_clip_args(args)),
             )
         )
         try:
@@ -233,7 +238,7 @@ class AuditMiddleware(AgentMiddleware):
         emit(
             ToolCallFinished(
                 call_id=call.get("id"), tool=call.get("name", "?"), outcome=final, duration_ms=duration_ms,
-                task_key=scope_ids().get("task_key"),
+                task_key=scope_ids().get("task_key"), output_chars=details.get("output_chars"),
             )
         )  # fmt: skip
         await record(

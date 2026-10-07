@@ -1,0 +1,17 @@
+id: py-todo-explain-done
+app: py-todo-api
+stack: python
+category: explain
+permissions: read_only
+task: >-
+  How does the todo API store whether a todo is done in the database, and how is that turned back into
+  true/false in the JSON responses? Name the file and the functions involved. Don't change any files.
+answer:
+  contains_all: ["storage.py", "_row_to_todo"]
+  contains_any: ["integer", "0/1", "0 or 1", "1 or 0", "0 and 1", "1 and 0"]
+  reference: >-
+    In todo/storage.py the done flag is an INTEGER column (0/1, default 0); TodoStore.update writes
+    1 if done else 0, and _row_to_todo converts it back with bool(row["done"]) when rows become dicts.
+expect:
+  tools: [read_file]
+  unchanged: ["*"]

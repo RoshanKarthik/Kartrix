@@ -10,7 +10,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "python-dotenv>=1.2.2,<2.0.0",
     "openai>=2.43.0,<3.0.0",
-    "rich>=15.0.0,<16.0.0",
+    "rich>=14.0.0,<16.0.0",
     "pydantic>=2.13.4,<3.0.0",
     "pyyaml>=6.0.3,<7.0.0",
     "langchain>=1.3.11,<2.0.0",
@@ -51,11 +51,18 @@ dev = [
     "ruff>=0.13",
     "types-pyyaml>=6.0.12.20260906",
 ]
+# The agent and RAG evals (`kartrix eval`, step 2.3) — for developing Kartrix, not shipped to users.
+eval = [
+    "deepeval>=4.0.9",
+]
+
+[tool.uv]
+default-groups = ["dev", "eval"]
 
 [tool.ruff]
 line-length = 120
 target-version = "py312"
-extend-exclude = [".uv-cache", ".uv-python", ".kartrix"]
+extend-exclude = [".uv-cache", ".uv-python", ".kartrix", "evals/agent/apps", "evals/agent/tasks"]  # eval fixtures: apps as an agent finds them
 
 [tool.ruff.lint]
 # pycodestyle, pyflakes, isort, pyupgrade, bugbear, async pitfalls, bandit (security), ruff-specific
@@ -101,6 +108,7 @@ module = [
     "kartrix.tasks.task_store",
     "kartrix.core.*",
     "kartrix.headless.*",
+    "kartrix.evals.*",
     "kartrix.sandbox.*",
     "kartrix.ui.*",
     "kartrix.security.*",
@@ -115,7 +123,7 @@ disallow_incomplete_defs = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers -p no:deepeval"  # deepeval's plugin would track every test session
 filterwarnings = [
     # tree-sitter-languages 1.10 uses an API tree-sitter 0.21 deprecates; pinned until A-phase parser work
     'ignore:Language.path, name. is deprecated:FutureWarning',

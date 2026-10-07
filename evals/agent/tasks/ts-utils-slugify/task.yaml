@@ -1,0 +1,15 @@
+id: ts-utils-slugify
+app: ts-text-utils
+stack: typescript
+category: bugfix
+quick: true
+task: >-
+  slugify("Crème brûlée, à la carte!") returns "cr-me-br-l-e---la-carte" but, as the README says, accents
+  must be removed and words separated by single dashes: it should return "creme-brulee-a-la-carte". Fix
+  slugify.
+check:
+  - name: tests
+    run: ["{node}", "--test"]
+expect:
+  tools: [read_file, edit_file]
+notes: slugify replaces every non-alphanumeric character with a dash and keeps no accents; planted by setup/.

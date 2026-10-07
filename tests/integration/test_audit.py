@@ -149,6 +149,11 @@ async def test_audit_rows_are_append_only(root: Path) -> None:
         ("Error: command not run — needs approval", "needs_approval"),
         ("Error: the user declined this command", "declined"),
         ("Error: file not found: x", "error"),
+        (
+            "Error invoking tool 'read_file' with kwargs {'x': 1} with error:\n file_path: Field required",
+            "invalid_args",
+        ),
+        ("Error: open_file is not a valid tool, try one of [read_file].", "unknown_tool"),
         ("     1\tcode", "ok"),
     ],
 )

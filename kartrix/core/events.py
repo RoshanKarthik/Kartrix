@@ -83,15 +83,17 @@ class ToolCallStarted(_Event):
     tool: str
     target: str | None = None
     task_key: str | None = None
+    args: dict[str, Any] | None = None  # secrets redacted, long strings clipped
 
 
 class ToolCallFinished(_Event):
     type: Literal["tool_call_finished"] = "tool_call_finished"
     call_id: str | None
     tool: str
-    outcome: str  # ok, error, denied, declined, stopped, …
+    outcome: str  # ok, error, invalid_args, denied, declined, stopped, …
     duration_ms: float
     task_key: str | None = None
+    output_chars: int | None = None
 
 
 class ApprovalRequested(_Event):
