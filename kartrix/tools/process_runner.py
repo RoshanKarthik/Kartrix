@@ -5,7 +5,9 @@
   the command left running in the background.
 - POSIX: the process gets its own session (process group); the group is killed afterwards.
 
-stdin is closed, so a program waiting for input fails instead of hanging.
+stdin is closed, so a program waiting for input fails instead of hanging. With ``should_stop``
+(the kill switch, :mod:`kartrix.security.budget`) the command is polled every half second and
+its whole tree is killed as soon as the run must stop.
 """
 
 from __future__ import annotations
@@ -14,6 +16,8 @@ import os
 import signal
 import subprocess
 import sys
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,7 +32,10 @@ class ProcessResult:
     stdout: str
     stderr: str
     timed_out: bool
+    stopped: str | None = None  # why the kill switch killed it
 
+
+_POLL_SECONDS = 0.5
 
 if sys.platform == "win32":
     import ctypes
@@ -114,8 +121,10 @@ def run_process(
     cwd: Path | None,
     env: dict[str, str],
     timeout: float,
+    should_stop: Callable[[], str | None] | None = None,
 ) -> ProcessResult:
-    """Run ``args`` (``shell=False``; a str only for pre-quoted Windows batch command lines)."""
+    """Run ``args`` (``shell=False``; a str only for pre-quoted Windows batch command lines).
+    ``should_stop`` returns a reason once the command must be killed (polled every half second)."""
     proc = subprocess.Popen(  # noqa: S603 — args produced and vetted by the command policy
         args,
         cwd=cwd,
@@ -128,14 +137,23 @@ def run_process(
     )
     job = _create_job(proc)
     timed_out = False
+    stopped: str | None = None
+    deadline = time.monotonic() + timeout
     try:
-        out, err = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        _end_tree(proc, job)
-        job = None
-        proc.kill()
-        out, err = proc.communicate()
+        while True:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                out, err = proc.communicate(timeout=min(remaining, _POLL_SECONDS) if should_stop else remaining)
+                break
+            except subprocess.TimeoutExpired:
+                stopped = should_stop() if should_stop else None
+                timed_out = not stopped and time.monotonic() >= deadline
+                if stopped or timed_out:
+                    _end_tree(proc, job)
+                    job = None
+                    proc.kill()
+                    out, err = proc.communicate()
+                    break
     finally:
         if proc.poll() is None:  # interrupted (e.g. Ctrl+C): don't leave it running
             _end_tree(proc, job)
@@ -143,7 +161,7 @@ def run_process(
             proc.kill()
     if job is not None:
         _end_tree(proc, job)  # background leftovers die with the command
-    return ProcessResult(proc.returncode, _decode(out), _decode(err), timed_out)
+    return ProcessResult(proc.returncode, _decode(out), _decode(err), timed_out, stopped)
 
 
 def _decode(data: bytes) -> str:

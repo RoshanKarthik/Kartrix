@@ -188,6 +188,52 @@ class PermissionsSettings(_Section):
     env_passthrough: list[str] = Field(default_factory=list)
 
 
+class BudgetLimits(_Section):
+    """Limits for one run; null = no limit. Checked before every model and tool call."""
+
+    max_tokens: int | None = Field(None, gt=0)  # input + output tokens of every model call
+    max_cost_usd: float | None = Field(None, gt=0)  # needs a price for the model (budgets.prices)
+    max_tool_calls: int | None = Field(None, gt=0)
+    max_seconds: float | None = Field(None, gt=0)  # wall-clock, without time spent waiting for the user
+
+
+class ModelPrice(_Section):
+    input: float = Field(ge=0)  # USD per million input tokens
+    output: float = Field(ge=0)  # USD per million output tokens
+
+
+class BudgetSettings(_Section):
+    """Budgets (B9) — see kartrix/security/budget.py."""
+
+    # One chat request.
+    turn: BudgetLimits = BudgetLimits(max_tokens=1_500_000, max_cost_usd=2.0, max_tool_calls=80, max_seconds=1200)
+    # One /plan run: planning, every task and the judge.
+    plan: BudgetLimits = BudgetLimits(max_tokens=10_000_000, max_cost_usd=10.0, max_tool_calls=600, max_seconds=7200)
+    # Model name → price. Models without a price count tokens but no cost (shown as "cost unknown").
+    prices: dict[str, ModelPrice] = Field(default_factory=dict)
+
+
+class CheckpointSettings(_Section):
+    """Workspace checkpoints before every turn/task and /undo (B11) — see kartrix/security/checkpoints.py."""
+
+    enabled: bool = True
+    keep: int = Field(50, gt=0)  # undo entries kept per workspace
+    # gitignore syntax, on top of the workspace's .gitignore files and workspace.deny_write (secrets).
+    exclude: list[str] = Field(
+        default_factory=lambda: [
+            "node_modules/",
+            ".venv/",
+            "venv/",
+            "__pycache__/",
+            ".mypy_cache/",
+            ".pytest_cache/",
+            ".ruff_cache/",
+            ".next/",
+            ".turbo/",
+        ]
+    )
+
+
 class RetrievalSettings(_Section):
     mode: Literal["hybrid", "dense", "sparse"] = "hybrid"  # hybrid = pgvector + full-text, fused with RRF
     top_k: int = Field(5, gt=0)
@@ -258,6 +304,8 @@ class Settings(BaseSettings):
     retrieval: RetrievalSettings = RetrievalSettings()
     workspace: WorkspaceSettings = WorkspaceSettings()
     permissions: PermissionsSettings = PermissionsSettings()
+    budgets: BudgetSettings = BudgetSettings()
+    checkpoints: CheckpointSettings = CheckpointSettings()
     database: DatabaseSettings = DatabaseSettings()
     logging: LoggingSettings = LoggingSettings()
 

@@ -105,6 +105,37 @@ permissions:                    # what the agent's commands may do (kartrix/secu
   command_timeout: 300          # seconds; the whole process tree is killed after this
   env_passthrough: []           # env vars passed to commands even though their name looks secret
 
+budgets:                        # a run stops at the next model/tool call once a limit is reached (null = no limit)
+  turn:                         # one chat request
+    max_tokens: 1500000         # input + output tokens of all model calls
+    max_cost_usd: 2.0           # only for models with a price below
+    max_tool_calls: 80
+    max_seconds: 1200           # time waiting for your approval doesn't count
+  plan:                         # one /plan run: planning, every task and the judge
+    max_tokens: 10000000
+    max_cost_usd: 10.0
+    max_tool_calls: 600
+    max_seconds: 7200
+  prices:                       # USD per million tokens; models not listed count tokens but no cost
+    nvidia/nemotron-3-super-120b-a12b: {input: 0, output: 0}   # NVIDIA free tier
+    openai/gpt-oss-20b: {input: 0, output: 0}
+    google/gemma-4-31b-it: {input: 0, output: 0}
+    Qwen/Qwen3-Coder-30B-A3B-Instruct: {input: 0, output: 0}   # Hugging Face monthly free credits
+
+checkpoints:                    # snapshot before every turn and /plan task, for /undo (needs git on PATH)
+  enabled: true
+  keep: 50                      # undo entries kept per workspace
+  exclude:                      # never snapshotted or touched by /undo (plus .gitignore and the secret patterns)
+    - node_modules/
+    - .venv/
+    - venv/
+    - __pycache__/
+    - .mypy_cache/
+    - .pytest_cache/
+    - .ruff_cache/
+    - .next/
+    - .turbo/
+
 retrieval:
   mode: hybrid                  # hybrid (pgvector + Postgres full-text, RRF) | dense | sparse
   top_k: 5

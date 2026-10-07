@@ -183,6 +183,16 @@ class TaskStore:
             )
         logger.info(f"Task {key} failed: {error[:80]}")
 
+    async def release_task(self, project_id: str, key: str, reason: str) -> None:
+        """IN_PROGRESS → PENDING without using a retry: the run was stopped, the task didn't fail."""
+        async with session_scope() as s:
+            await s.execute(
+                update(Task)
+                .where(Task.project_id == uuid.UUID(project_id), Task.key == key, Task.status == TaskStatus.IN_PROGRESS)
+                .values(status=TaskStatus.PENDING, error=f"STOPPED: {reason}"[:2000], started_at=None)
+            )
+        logger.info(f"Task {key} released: {reason}")
+
     async def block_task(self, project_id: str, key: str, reason: str) -> None:
         async with session_scope() as s:
             await s.execute(

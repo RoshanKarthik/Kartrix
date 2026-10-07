@@ -8,6 +8,7 @@ from langchain.agents import create_agent
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel
 
+from kartrix.agent.factory import agent_middleware
 from kartrix.llm.factory import get_chat_model, get_model_middleware
 from kartrix.observability.logger import get_logger
 from kartrix.security.approvals import (
@@ -17,8 +18,8 @@ from kartrix.security.approvals import (
     Approver,
     stream_agent,
 )
-from kartrix.security.audit import AuditMiddleware
-from kartrix.security.injection import SECURITY_RULES, ContentGuardMiddleware
+from kartrix.security.budget import BudgetMiddleware, raise_if_stopped
+from kartrix.security.injection import SECURITY_RULES
 from kartrix.tools.filesystem_tools import READ_TOOLS, WRITE_TOOLS, edit_file, write_file
 from kartrix.tools.terminal_tools import run_command
 
@@ -120,7 +121,7 @@ async def _judge_task(task: dict, agent_output: str) -> _JudgeVerdict:
         tools=[],
         system_prompt=_JUDGE_SYSTEM_PROMPT,
         response_format=_JudgeVerdict,
-        middleware=get_model_middleware(temperature=0, max_tokens=1000),
+        middleware=[*get_model_middleware(temperature=0, max_tokens=1000), BudgetMiddleware()],
     )
 
     criteria = _parse_json_field(task.get("acceptance_criteria"))
@@ -132,6 +133,7 @@ AGENT OUTPUT:
 {agent_output[:2000]}"""
 
     result = await judge_agent.ainvoke({"messages": [{"role": "user", "content": user_message}]})
+    raise_if_stopped()  # the budget ended the judge before it answered
     return result["structured_response"]
 
 
@@ -162,9 +164,10 @@ async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None, a
 
     logger.info(f"Building agent for task {task['id']} (type={task['task_type']}, tools={[t.name for t in tools]})")
 
-    middleware = [*get_model_middleware(temperature=0, max_tokens=3000), AuditMiddleware(), ContentGuardMiddleware()]
-    if approver is not None:
-        middleware.insert(-2, ApprovalMiddleware())  # outside audit, like the chat agent
+    # Without an approver there's no one to ask: commands needing approval are refused by the tool.
+    middleware = agent_middleware(
+        ApprovalMiddleware() if approver is not None else None, temperature=0, max_tokens=3000
+    )
     # Interrupts need a checkpointer; a task's run is not resumed across restarts (recovery
     # re-runs crashed tasks), so memory is enough. The thread id is not a UUID on purpose:
     # audit rows then take the session id from the orchestrator's audit scope.
@@ -197,6 +200,8 @@ async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None, a
         else:
             logger.info(f"Task {task['id']} → {type(last_msg).__name__}: {str(getattr(last_msg, 'content', ''))[:200]}")
         final_state = step
+    # A budget limit or the kill switch ended the agent early: the task isn't done (and isn't judged).
+    raise_if_stopped()
 
     def _get_content(msg) -> str:
         # Anthropic models return content as a list of blocks; OpenAI returns a plain string.

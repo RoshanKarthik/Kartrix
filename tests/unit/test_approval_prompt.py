@@ -99,3 +99,17 @@ async def test_mcp_requests_cannot_be_edited_or_session_allowed() -> None:
     assert prompts[0][1] == ["y", "n"]
     text = out.getvalue()
     assert "[e] edit" not in text and "$ github" not in text and "in ." not in text
+
+
+async def test_a_stopped_run_declines_without_asking_further() -> None:
+    from kartrix.config import BudgetLimits
+    from kartrix.security.budget import Budget, budget_scope
+
+    budget = Budget("turn", BudgetLimits())
+    ap, asked, _ = approver("y", "y")
+    with budget_scope(budget):
+        budget.stop("stopped by the user (Ctrl+C)", hard=True)  # e.g. Ctrl+C while the prompt was open
+        decisions = await ap([request(), request("npm test")])
+    assert asked == []
+    assert [d.type for d in decisions] == ["reject", "reject"]
+    assert "run stopped" in (decisions[0].message or "")

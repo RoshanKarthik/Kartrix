@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from kartrix.llm.factory import get_chat_model, get_model_middleware
 from kartrix.observability.logger import get_logger
+from kartrix.security.budget import BudgetMiddleware, raise_if_stopped
 from kartrix.tasks.task_store import TaskType
 
 logger = get_logger(__name__)
@@ -55,7 +56,7 @@ def create_plan(goal: str, extra_context: str = "") -> ExecutionPlan:
         tools=[],
         system_prompt=_SYSTEM_PROMPT,
         response_format=ExecutionPlan,
-        middleware=get_model_middleware(temperature=0),
+        middleware=[*get_model_middleware(temperature=0), BudgetMiddleware()],
     )
 
     user_message = f"Goal: {goal}"
@@ -63,6 +64,7 @@ def create_plan(goal: str, extra_context: str = "") -> ExecutionPlan:
         user_message += f"\n\nAdditional context / change requests:\n{extra_context}"
 
     result = planner_agent.invoke({"messages": [{"role": "user", "content": user_message}]})
+    raise_if_stopped()
     plan: ExecutionPlan = result["structured_response"]
     logger.info(f"Plan created: {plan.project_name} with {len(plan.tasks)} tasks")
     return plan

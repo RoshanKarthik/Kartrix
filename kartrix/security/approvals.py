@@ -37,6 +37,7 @@ from kartrix.db.engine import session_scope
 from kartrix.db.models import Approval, ApprovalKind, ApprovalStatus
 from kartrix.observability.logger import get_logger
 from kartrix.security import audit, external_tools, permissions
+from kartrix.security.budget import waiting_for_user
 from kartrix.security.command_policy import Decision, evaluate
 from kartrix.security.command_rules import Category
 from kartrix.security.injection import external_content_cap
@@ -325,7 +326,8 @@ async def resolve(interrupt_value: dict[str, Any], approver: Approver, session_i
     requests = [ApprovalRequest(**r) for r in interrupt_value.get("requests", [])]
     ids = await _open_rows(requests, session_id)
     start = time.perf_counter()
-    decisions = await approver(requests)
+    with waiting_for_user():  # the run's time budget doesn't run while the user decides
+        decisions = await approver(requests)
     if len(decisions) != len(requests):
         raise RuntimeError(f"approver returned {len(decisions)} decisions for {len(requests)} requests")
     logger.info(

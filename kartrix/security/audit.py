@@ -13,6 +13,7 @@ the tool call still succeeds — losing the agent's work over an audit hiccup wo
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -168,6 +169,8 @@ def classify_outcome(text: str, status: str | None = None) -> str:
         return "needs_approval"
     if head.startswith("Error: the user declined"):
         return "declined"
+    if head.startswith("Error: stopped"):
+        return "stopped"
     if head.startswith("Error") or status == "error":
         return "error"
     return "ok"
@@ -186,6 +189,9 @@ class AuditMiddleware(AgentMiddleware):
         start = time.perf_counter()
         try:
             result = await handler(request)
+        except asyncio.CancelledError:  # the kill switch cancelled the run mid-call
+            await self._record(request, "stopped", holder, start, {"exception": "cancelled"})
+            raise
         except Exception as e:
             await self._record(request, "error", holder, start, {"exception": f"{type(e).__name__}: {e}"})
             raise

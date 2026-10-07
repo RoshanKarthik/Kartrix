@@ -16,6 +16,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.text import Text
 
+from kartrix.security import budget
 from kartrix.security.approvals import ApprovalDecision, ApprovalRequest
 from kartrix.security.injection import visible
 
@@ -47,6 +48,9 @@ class ConsoleApprover:
         async with self._lock:
             decisions: list[ApprovalDecision] = []
             for i, request in enumerate(requests, 1):
+                if (run := budget.current()) is not None and run.stop_reason:  # Ctrl+C while asking
+                    decisions.append(ApprovalDecision("reject", message=f"no answer — run stopped ({run.stop_reason})"))
+                    continue
                 try:
                     decisions.append(await self._decide(request, i, len(requests)))
                 except EOFError:
@@ -77,6 +81,8 @@ class ConsoleApprover:
         self.console.print(Text(f"[y] yes, once · {session}{edit}[n] no", style="dim"))
         while True:
             choice = await asyncio.to_thread(self._ask, "Run it?", options, "n")
+            if (run := budget.current()) is not None and run.stop_reason:
+                return ApprovalDecision("reject", message=f"no answer — run stopped ({run.stop_reason})")
             if choice == "y":
                 return ApprovalDecision("approve")
             if choice == "a" and request.allow_session:

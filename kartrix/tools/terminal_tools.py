@@ -10,6 +10,7 @@ from langchain.tools import tool
 from kartrix.config import settings
 from kartrix.observability.logger import get_logger
 from kartrix.security.audit import note
+from kartrix.security.budget import command_stop_check
 from kartrix.security.command_policy import Decision, evaluate
 from kartrix.security.environment import scrubbed_env
 from kartrix.security.permissions import get_mode, request_approval
@@ -34,7 +35,9 @@ def format_result(result: ProcessResult, timeout: float) -> str:
         parts.append(_clip(result.stdout.rstrip()))
     if result.stderr.strip():
         parts.append(f"STDERR: {_clip(result.stderr.rstrip())}")
-    if result.timed_out:
+    if result.stopped:
+        parts.append(f"Error: stopped — {result.stopped}; the command and everything it started were killed")
+    elif result.timed_out:
         parts.append(f"Error: command timed out after {timeout:.0f} seconds and was stopped")
     elif result.returncode != 0:
         parts.append(f"Exit code: {result.returncode}")
@@ -76,10 +79,12 @@ def run_command(command: str, directory: str = ".") -> str:
 
     timeout = settings.permissions.command_timeout
     try:
-        result = run_process(decision.run_args, decision.cwd, scrubbed_env(), timeout)
+        result = run_process(decision.run_args, decision.cwd, scrubbed_env(), timeout, command_stop_check())
     except OSError as e:
         return f"Error: could not start {decision.argv[0]}: {e.strerror or e}"
-    note(returncode=result.returncode, timed_out=result.timed_out)
+    note(returncode=result.returncode, timed_out=result.timed_out, stopped=result.stopped)
+    if result.stopped:
+        note(outcome="stopped")
     logger.info(
         "Command finished",
         extra={"argv": decision.argv, "returncode": result.returncode, "timed_out": result.timed_out},
