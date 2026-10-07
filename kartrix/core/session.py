@@ -9,7 +9,10 @@ differ only in how they answer questions (approver, plan reviewer) and render ev
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import time
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -18,6 +21,7 @@ from kartrix.agent.factory import NATIVE_TOOLS, build_agent
 from kartrix.agent.orchestrator import handle_query
 from kartrix.cache.semantic_cache import build_semantic_cache, get_repo_domain
 from kartrix.config import BudgetLimits, settings
+from kartrix.context.index_status import set_status as set_index_status
 from kartrix.context.indexers.pg_index import index_repo
 from kartrix.context.indexers.watcher import start_watcher, stop_watcher
 from kartrix.core.events import AssistantMessage, RunFinished, RunStarted, RunStatus, Usage, emit, notice, run_scope
@@ -39,6 +43,21 @@ from kartrix.skills.skill_tools import get_registry
 from kartrix.tasks.orchestrator import PlanResult, handle_plan_command
 
 logger = get_logger(__name__)
+
+
+class _Clock:
+    """Records how long each startup phase took (``CoreSession.startup_timings``)."""
+
+    def __init__(self, into: dict[str, float]) -> None:
+        self.into = into
+
+    @contextlib.contextmanager
+    def __call__(self, name: str) -> Iterator[None]:
+        start = time.perf_counter()
+        try:
+            yield
+        finally:
+            self.into[name] = round(time.perf_counter() - start, 3)
 
 
 def usage_of(budget: Budget) -> Usage:
@@ -73,6 +92,9 @@ class StartOptions:
     mcp: bool = True  # reconnect the MCP servers the user turned on
     semantic_cache: bool = True  # if enabled in config
     resume_pending: bool = True  # finish an approval the session was waiting for
+    # background: start answering at once, the index catches up (search says so meanwhile);
+    # wait: the index is up to date before start() returns (headless runs, the evals)
+    index: Literal["background", "wait"] = "background"
 
 
 class CoreSession:
@@ -87,7 +109,10 @@ class CoreSession:
         self.cache_domain: str | None = None
         self.mcp: McpManager | None = None
         self.last_budget: Budget | None = None
+        self.startup_timings: dict[str, float] = {}
         self._observer: Any = None
+        self._index_task: asyncio.Task[None] | None = None
+        self._watch = False
 
     @classmethod
     async def start(
@@ -96,53 +121,66 @@ class CoreSession:
         """Bootstrap LLM, embedder, workspace jail, checkpoints, sandbox, index, cache, MCP, agent, session."""
         opts = options or StartOptions()
         self = cls(approver, reviewer)
+        self._watch = opts.watch
+        clock = _Clock(self.startup_timings)
         # Built once up front so a missing API key or bad provider config fails at startup.
-        get_llm()
-        get_embedder()
+        with clock("llm"):
+            get_llm()
+            get_embedder()
         notice(f"LLM: {settings.llm.provider} / {settings.llm.model}")
         notice(f"Embedder: {settings.embeddings.provider} / {settings.embeddings.model}")
 
         workspace = set_workspace(self.repo_path)  # file tools may only touch this tree
         notice(f"Workspace: {workspace.root} · permission mode: {get_mode()}")
-        off = checkpoints.setup()
-        if off:
-            notice(f"Checkpoints off: {off}", "warning")
-        else:
-            undo, _ = await asyncio.to_thread(checkpoints.current().entries)  # type: ignore[union-attr]
-            notice(f"Checkpoints: on ({len(undo)} undo points) — /undo reverts the last change")
-        sandbox = await asyncio.to_thread(sandbox_status)
+        with clock("checkpoints"):
+            off = checkpoints.setup()
+            if off:
+                notice(f"Checkpoints off: {off}", "warning")
+            else:
+                undo, _ = await asyncio.to_thread(checkpoints.current().entries)  # type: ignore[union-attr]
+                notice(f"Checkpoints: on ({len(undo)} undo points) — /undo reverts the last change")
+        with clock("sandbox"):
+            sandbox = await asyncio.to_thread(sandbox_status)
         notice(f"Sandbox: {sandbox.describe()}", "info" if sandbox.backend is not None else "warning")
-        await self.reindex()
 
-        if opts.semantic_cache:
-            self.semantic_cache = await build_semantic_cache()
-        self.cache_domain = get_repo_domain(self.repo_path) if self.semantic_cache else None
+        with clock("semantic_cache"):
+            if opts.semantic_cache:
+                self.semantic_cache = await build_semantic_cache()
+            self.cache_domain = get_repo_domain(self.repo_path) if self.semantic_cache else None
         if self.semantic_cache is not None:
             notice(f"Semantic cache: enabled (threshold={self.semantic_cache.threshold})")
         else:
             notice("Semantic cache: disabled")
 
-        if opts.watch:
-            self._observer = start_watcher(self.repo_path, asyncio.get_running_loop(), on_change=self.invalidate_cache)
-
-        self.mcp = McpManager(t.name for t in NATIVE_TOOLS)
-        if opts.mcp:
-            for name, error in (await self.mcp.connect_remembered()).items():
-                notice(f"MCP server {name} not connected: {error}", "warning")
-            if self.mcp.connected:
-                notice(f"MCP: {', '.join(self.mcp.connected)} ({len(self.mcp.tools)} tools)")
+        with clock("mcp"):
+            self.mcp = McpManager(t.name for t in NATIVE_TOOLS)
+            if opts.mcp:
+                for name, error in (await self.mcp.connect_remembered()).items():
+                    notice(f"MCP server {name} not connected: {error}", "warning")
+                if self.mcp.connected:
+                    notice(f"MCP: {', '.join(self.mcp.connected)} ({len(self.mcp.tools)} tools)")
         registry = get_registry()
         pending_skills = [s.name for s in registry.skills() if registry.status(s.name) != "trusted"]
         if pending_skills:
             notice(f"This repo has skills you haven't approved: {', '.join(pending_skills)} — see /skills", "warning")
 
-        self.checkpointer = get_checkpointer()
-        self.rebuild_agent()
-        self.session_id = opts.session_id or get_current_session()
-        await record_session(self.session_id, self.repo_path)
+        with clock("agent"):
+            self.checkpointer = get_checkpointer()
+            self.rebuild_agent()
+        with clock("session"):
+            self.session_id = opts.session_id or get_current_session()
+            await record_session(self.session_id, self.repo_path)
         notice(f"Session: {self.session_id}")
+
+        if opts.index == "wait":
+            with clock("index"):
+                await self._update_index()
+        else:
+            set_index_status("building")  # before the task runs: search must never see a stale "ready"
+            self._index_task = asyncio.create_task(self._update_index(), name="kartrix-index")
         if opts.resume_pending:
             await self.finish_pending_approval()
+        logger.info("Startup timing", extra={"seconds": self.startup_timings, "index": opts.index})
         return self
 
     # ── state ──────────────────────────────────────────────────────────
@@ -152,9 +190,34 @@ class CoreSession:
         self.agent = build_agent(self.checkpointer, self.mcp.tools if self.mcp else [])
 
     async def reindex(self) -> None:
-        notice(f"Checking index for {self.repo_path}...")
-        stats = await index_repo(self.repo_path)
-        notice(f"Index: {stats}")
+        """Bring the index up to date now (``/reindex``)."""
+        if self._index_task is not None and not self._index_task.done():
+            await self._index_task  # the background update already does it
+            return
+        await self._update_index()
+
+    async def _update_index(self) -> None:
+        """Index the workspace; then watch it for changes (if enabled). Never raises."""
+        set_index_status("building")
+        start = time.perf_counter()
+        try:
+            stats = await index_repo(self.repo_path)
+        except Exception as e:
+            logger.error("Indexing failed", extra={"error": repr(e)})
+            set_index_status("failed", f"{type(e).__name__}: {e}")
+            notice(f"Indexing failed: {e} — search falls back to grep/glob", "warning")
+            return
+        set_index_status("ready", str(stats))
+        self.startup_timings["index"] = round(time.perf_counter() - start, 2)
+        notice(f"Index ready: {stats}")
+        if self._watch and self._observer is None:
+            self._observer = await asyncio.to_thread(
+                start_watcher, self.repo_path, asyncio.get_running_loop(), self.invalidate_cache
+            )
+
+    @property
+    def ready_for_search(self) -> bool:
+        return self._index_task is None or self._index_task.done()
 
     async def invalidate_cache(self) -> None:
         if self.semantic_cache is not None and self.cache_domain is not None:
@@ -181,6 +244,10 @@ class CoreSession:
             emit(AssistantMessage(text=str(result["messages"][-1].content)))
 
     async def close(self) -> None:
+        if self._index_task is not None and not self._index_task.done():
+            self._index_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._index_task
         if self.mcp is not None:
             await self.mcp.close()  # same task that opened the sessions
         if self._observer is not None:

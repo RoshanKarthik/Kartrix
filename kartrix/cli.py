@@ -16,8 +16,18 @@ import sys
 from datetime import datetime
 
 
+def _version() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("kartrix")
+    except PackageNotFoundError:
+        return "unknown"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="kartrix", description="Kartrix - security-first AI coding agent.")
+    parser.add_argument("--version", action="version", version=f"kartrix {_version()}")
     commands = parser.add_subparsers(dest="command", metavar="command")
     commands.add_parser(
         "stop",

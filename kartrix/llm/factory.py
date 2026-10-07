@@ -8,8 +8,11 @@ still fails the fallback models are tried in turn.
 API keys come only from env vars (NVIDIA_API_KEY, HF_TOKEN, ...).
 """
 
+import functools
 import os
+import threading
 import warnings
+from collections.abc import Callable
 from typing import Any, Literal
 
 from langchain.agents.middleware import AgentMiddleware, ModelFallbackMiddleware, ModelRetryMiddleware
@@ -81,9 +84,37 @@ def get_chat_model(role: Role = "main", **kwargs: Any) -> BaseChatModel:
     return _build_chat_model(cfg.provider, model, **kwargs)
 
 
+_PROVIDER_KEYS = {"nvidia": "NVIDIA_API_KEY", "huggingface": "HF_TOKEN", "openai": "OPENAI_API_KEY",
+                  "anthropic": "ANTHROPIC_API_KEY"}  # fmt: skip
+
+
 def get_fallback_chat_models(**kwargs: Any) -> list[BaseChatModel]:
     """Fallback models in configured order (may be empty)."""
     return [_build_chat_model(fb.provider, fb.model, **kwargs) for fb in settings.llm.fallbacks]
+
+
+class LazyModelFallbackMiddleware(ModelFallbackMiddleware):
+    """``ModelFallbackMiddleware`` whose fallback models are built on first use.
+
+    Building a client means importing its SDK (``langchain_openai`` alone takes seconds on a
+    cold start) for a model that is only needed when the primary fails — so it waits until then."""
+
+    def __init__(self, factories: list[Callable[[], BaseChatModel]]) -> None:
+        AgentMiddleware.__init__(self)
+        self._factories = factories
+        self._models: list[BaseChatModel] | None = None
+        self._build_lock = threading.Lock()
+
+    @property
+    def models(self) -> list[BaseChatModel]:
+        with self._build_lock:
+            if self._models is None:
+                self._models = [factory() for factory in self._factories]
+            return self._models
+
+    @models.setter
+    def models(self, value: list[BaseChatModel]) -> None:
+        self._models = value
 
 
 def get_model_middleware(**kwargs: Any) -> list[AgentMiddleware]:
@@ -94,9 +125,16 @@ def get_model_middleware(**kwargs: Any) -> list[AgentMiddleware]:
     """
     policy = settings.llm.retry
     middleware: list[AgentMiddleware] = []
-    fallbacks = get_fallback_chat_models(**kwargs)
+    fallbacks = settings.llm.fallbacks
+    for fb in fallbacks:  # a missing key still fails at startup, not at the first fallback
+        if fb.provider in _PROVIDER_KEYS:
+            _require_env(_PROVIDER_KEYS[fb.provider])
     if fallbacks:
-        middleware.append(ModelFallbackMiddleware(*fallbacks))
+        middleware.append(
+            LazyModelFallbackMiddleware(
+                [functools.partial(_build_chat_model, fb.provider, fb.model, **kwargs) for fb in fallbacks]
+            )
+        )
     middleware.append(
         ModelRetryMiddleware(
             max_retries=policy.max_retries,

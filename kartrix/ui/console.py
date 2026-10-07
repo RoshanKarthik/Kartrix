@@ -7,6 +7,8 @@ files is printed without interpreting Rich markup.
 
 from __future__ import annotations
 
+import threading
+
 from rich.console import Console
 from rich.markup import escape
 
@@ -20,11 +22,33 @@ class ConsoleRenderer:
     def __init__(self, console: Console | None = None, *, show_tool_calls: bool = True) -> None:
         self.console = console or Console()
         self.show_tool_calls = show_tool_calls
+        self._held: list[ev.Event] | None = None
+        self._lock = threading.Lock()
+
+    def hold(self) -> None:
+        """Keep events back (e.g. while the prompt waits for input) until :meth:`release`."""
+        with self._lock:
+            if self._held is None:
+                self._held = []
+
+    def release(self) -> None:
+        """Show the events held back, then render live again."""
+        with self._lock:
+            held, self._held = self._held or [], None
+        for event in held:
+            self._render(event)
 
     def _line(self, text: str, style: str = "") -> None:
         self.console.print(f"[{style}]{escape(text)}[/{style}]" if style else escape(text))
 
     def __call__(self, event: ev.Event) -> None:
+        with self._lock:
+            if self._held is not None:
+                self._held.append(event)
+                return
+        self._render(event)
+
+    def _render(self, event: ev.Event) -> None:
         match event:
             case ev.Notice(level=level, text=text):
                 self._line(_NOTICE_PREFIX[level] + text, _NOTICE_STYLE[level])
