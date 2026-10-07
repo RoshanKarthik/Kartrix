@@ -40,6 +40,9 @@ memory:                         # conversation checkpoints live in Postgres
   session_file: .kartrix/current_session
   summarize_at_tokens: 4000
   keep_last_messages: 20
+  recall_k: 5                   # long-term memories recalled per turn
+  min_similarity: 0.3
+  dedupe_similarity: 0.92       # a new memory this close replaces the old one (newer wins)
 
 index:                          # what gets indexed (on top of every .gitignore in the repo)
   max_file_kb: 512              # larger files are skipped

@@ -54,7 +54,7 @@ def fake_sandbox() -> Iterator[FakeSandbox]:
 
 # ── Postgres ──────────────────────────────────────────────────────────
 
-_TABLES = "code_chunks, code_files, checkpoint_writes, checkpoints, tasks, approvals, projects, sessions"
+_TABLES = "memories, code_edges, code_chunks, code_files, checkpoint_writes, checkpoints, tasks, approvals, projects, sessions"
 
 
 async def _create_database(url: str) -> None:
@@ -113,6 +113,7 @@ def fake_embedder(monkeypatch: pytest.MonkeyPatch) -> HashingEmbeddings:
         "kartrix.context.indexers.pg_index",
         "kartrix.context.retrievers.pg_hybrid",
         "kartrix.cache.semantic_cache",
+        "kartrix.memory.long_term",
     ):
         monkeypatch.setattr(f"{mod}.get_embedder", lambda: emb)
     return emb

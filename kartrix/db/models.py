@@ -13,6 +13,7 @@ from typing import Any, ClassVar
 from pgvector.sqlalchemy import HALFVEC
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
@@ -326,3 +327,50 @@ class CheckpointWrite(Base):
     type: Mapped[str | None] = mapped_column(Text)
     value: Mapped[bytes | None] = mapped_column(LargeBinary)
     task_path: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+
+
+class Memory(Base):
+    """Long-term memory (3.6): a project fact, a user preference or a lesson learned, with its embedding
+    for recall by relevance. ``repo_root`` is NULL for user-level memories (they apply in every repo)."""
+
+    __tablename__ = "memories"
+    __table_args__ = (
+        CheckConstraint("scope IN ('project', 'user')", name="scope_valid"),
+        CheckConstraint("kind IN ('fact', 'preference', 'lesson')", name="kind_valid"),
+        Index("ix_memories_embedding_hnsw", "embedding", postgresql_using="hnsw",
+              postgresql_ops={"embedding": "halfvec_cosine_ops"}),
+    )  # fmt: skip
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    repo_root: Mapped[str | None] = mapped_column(Text, index=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)  # user | agent | review
+    embedding: Mapped[Any] = mapped_column(HALFVEC(EMBEDDING_DIMS), nullable=False)
+    uses: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CodeEdge(Base):
+    """The code graph (GraphRAG for code): who calls what and which file imports what, extracted with
+    tree-sitter at indexing time. Rows go with their file (ON DELETE CASCADE)."""
+
+    __tablename__ = "code_edges"
+    __table_args__ = (
+        CheckConstraint("kind IN ('call', 'import')", name="kind_valid"),
+        Index("ix_code_edges_repo_root_target", "repo_root", "target"),
+        Index("ix_code_edges_repo_root_source", "repo_root", "source"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    file_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("code_files.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    repo_root: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)  # enclosing function/class, or the file path
+    kind: Mapped[str] = mapped_column(String(8), nullable=False)
+    target: Mapped[str] = mapped_column(Text, nullable=False)  # called name or imported module
+    line: Mapped[int] = mapped_column(Integer, nullable=False)

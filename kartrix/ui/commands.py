@@ -13,6 +13,7 @@ from rich.table import Table
 from kartrix.config import settings
 from kartrix.core.session import CoreSession
 from kartrix.mcp.mcp_client import McpError, McpManager
+from kartrix.memory import long_term
 from kartrix.memory.session import InvalidSessionIdError, new_session, switch_session
 from kartrix.observability.logger import get_logger
 from kartrix.security import audit, checkpoints, external_tools
@@ -128,6 +129,58 @@ async def handle_skills_command(arg: str, session_id: str) -> bool:
             console.print(f"  [red]⚠ contains text that looks like prompt injection ({rules})[/red]")
     console.print("[dim]Review a skill's files before approving it: /skills trust <name>[/dim]")
     return False
+
+
+MEMORY_USAGE = "Usage: /memory, /memory add [--user] <text>, /memory forget <id>"
+
+
+async def handle_memory_command(arg: str, session_id: str) -> None:
+    """/memory (list), /memory add [--user] <text>, /memory forget <id or id prefix>."""
+    action, _, rest = arg.partition(" ")
+    rest = rest.strip()
+    if action == "add" and rest:
+        user = rest.startswith("--user")
+        content = rest.removeprefix("--user").strip()
+        if not content:
+            console.print(f"[yellow]{escape(MEMORY_USAGE)}[/yellow]")
+            return
+        kind: long_term.Kind = "preference" if user else "fact"
+        memory_id = await long_term.remember(content, kind, source="user")
+        scope = "every repository" if user else "this repository"
+        console.print(f"[green]✓ Remembered ({kind}, {scope}): {memory_id[:8]}[/green]")
+        await audit.record(actor="user", action="memory.add", target=memory_id, outcome="ok", session_id=session_id)
+        return
+    if action == "forget" and rest:
+        matches = [m for m in await long_term.list_memories() if str(m.id).startswith(rest.lower())]
+        if len(matches) != 1:
+            console.print("[red]No memory with that id.[/red]" if not matches else "[red]Ambiguous id prefix.[/red]")
+            return
+        await long_term.forget(str(matches[0].id))
+        console.print(f"[dim]Forgot: {escape(matches[0].content[:80])}[/dim]")
+        await audit.record(
+            actor="user", action="memory.forget", target=str(matches[0].id), outcome="ok", session_id=session_id
+        )
+        return
+    if arg:
+        console.print(f"[yellow]{escape(MEMORY_USAGE)}[/yellow]")
+        return
+    memories = await long_term.list_memories()
+    if not memories:
+        console.print(
+            "[dim]No memories yet. /memory add <text> (or --user for a preference); "
+            f"{long_term.PROJECT_FILE} at the repo root is always loaded.[/dim]"
+        )
+        return
+    table = Table(title="Long-term memory (newest first)")
+    for col in ("id", "kind", "scope", "source", "updated", "uses", "content"):
+        table.add_column(col)
+    for m in memories:
+        table.add_row(
+            str(m.id)[:8], m.kind, m.scope, m.source, m.updated_at.astimezone().strftime("%m-%d %H:%M"),
+            str(m.uses), escape(m.content[:100]),
+        )  # fmt: skip
+    console.print(table)
+    console.print("[dim]/memory forget <id> removes one.[/dim]")
 
 
 def _when(ts: float) -> str:
@@ -253,6 +306,7 @@ def print_help() -> None:
     console.print("  [bold]/redo \\[force][/bold]            — re-apply what /undo reverted")
     console.print("  [bold]/checkpoints[/bold]             — list undo points")
     console.print("  [bold]/budget[/bold]                  — budget limits and the last run's usage")
+    console.print("  [bold]/memory \\[add \\[--user] <text>|forget <id>][/bold] — long-term memory")
     console.print("  [dim]Ctrl+C stops a running turn or plan (twice quits); `kartrix stop` stops all runs[/dim]")
 
 
@@ -324,6 +378,8 @@ async def dispatch(core: CoreSession, user_input: str) -> None:
         await handle_checkpoint_command(command, arg.strip(), core.session_id)
     elif user_input == "/budget":
         show_budget(core.last_budget)
+    elif user_input == "/memory" or user_input.startswith("/memory "):
+        await handle_memory_command(user_input.removeprefix("/memory").strip(), core.session_id)
     elif user_input == "/skills" or user_input.startswith("/skills "):
         if await handle_skills_command(user_input.removeprefix("/skills").strip(), core.session_id):
             core.rebuild_agent()

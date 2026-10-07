@@ -2,13 +2,18 @@
 
 ::
 
-    START → route ─┬─ chat ────────────────────────────────┐
-                   ├─ question → explore ──────────────────┤
-                   └─ change ──→ explore → code ⇄ review ──┴→ respond → END
+    START → compress → assemble → route ─┬─ chat ────────────────────────────────┐
+                                         ├─ question → explore ──────────────────┤
+                                         └─ change ──→ explore → code ⇄ review ──┴→ respond → END
+
+- **compress** — once the conversation passes ``memory.summarize_at_tokens``, old turns become one
+  summary (``kartrix.agent.context.compress``).
+- **assemble** — ``KARTRIX.md`` and the long-term memories relevant to the request, as the ``context``
+  the subagents get (``kartrix.agent.context.assemble``).
 
 - **route** — a small structured call on the cheap model (``llm.router_model``, model routing):
   is the request small talk, a question about the code, or a change?
-- **explore** — the *explorer* subagent: read-only tools (search, read, grep, glob, skills). It
+- **explore** — the *explorer* subagent: read-only tools (search, read, grep, glob, skills, remember). It
   investigates in a clean context and reports findings with file:line references.
 - **code** — the *coder* subagent: read/write tools and ``run_command`` (with the approval
   middleware: a command that needs approval pauses the whole graph until the user answers).
@@ -35,10 +40,12 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
-from kartrix.agent.tools import search_codebase
+from kartrix.agent import context as agent_context
+from kartrix.agent.tools import remember, search_codebase
 from kartrix.config import settings
 from kartrix.core.events import AgentStep, emit
 from kartrix.llm.factory import get_chat_model, get_model_middleware
+from kartrix.memory import long_term
 from kartrix.observability.logger import get_logger
 from kartrix.security.budget import BudgetMiddleware
 from kartrix.security.budget import current as current_budget
@@ -85,14 +92,16 @@ EXPLORER_PROMPT = f"""You are the explorer: a read-only code investigator.
 Find what the request needs in this repository: use search_codebase first, then grep, glob and read_file
 for exact code. Do not change anything. Report concise findings: the relevant files, functions and
 line numbers, how they work, and anything a developer must know to answer or implement the request.
-If something can't be found, say so.
+If something can't be found, say so. If you learn a lasting convention about this repository, save it
+with remember.
 {SECURITY_RULES}"""
 
 CODER_PROMPT = f"""You are the coder: you implement changes in this repository.
 Make the smallest correct change that does what was asked, matching the existing code style. Read a
 file before editing it; use edit_file for small changes. Add or update tests when behaviour changes and
 run them with run_command. Finish with a short report: the files you changed, what you changed and
-the result of the tests.
+the result of the tests. Follow the project instructions and remembered preferences and lessons you are
+given; save a new lasting fact or user preference with remember.
 {SECURITY_RULES}"""
 
 REVIEWER_PROMPT = f"""You are the reviewer: you independently check a change another agent made.
@@ -148,8 +157,8 @@ class AgentGraph:
         mcp_tools = mcp_tools or []
         extra = f"\n\n{skills_prompt}" if skills_prompt else ""
         llm = get_chat_model("main")
-        explorer_tools = [search_codebase, *READ_TOOLS, *skills, *mcp_tools]
-        coder_tools = [search_codebase, *READ_TOOLS, *WRITE_TOOLS, run_command, *skills, *mcp_tools]
+        explorer_tools = [search_codebase, *READ_TOOLS, remember, *skills, *mcp_tools]
+        coder_tools = [search_codebase, *READ_TOOLS, *WRITE_TOOLS, run_command, remember, *skills, *mcp_tools]
         reviewer_tools = [*READ_TOOLS, run_command]
         self.explorer = create_agent(
             llm, tools=explorer_tools, system_prompt=EXPLORER_PROMPT + extra, middleware=middleware(None)
@@ -171,6 +180,10 @@ class AgentGraph:
         )  # fmt: skip
 
     # ── nodes ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    async def compress(state: AgentState) -> dict[str, Any]:
+        return await agent_context.compress(state)
 
     async def route(self, state: AgentState) -> dict[str, Any]:
         request = _request(state)
@@ -221,6 +234,8 @@ class AgentGraph:
         approved = verdict.approved if verdict is not None else False
         notes = "\n".join(f"- {i}" for i in verdict.issues) if verdict is not None else "no verdict (stopped)"
         emit(AgentStep(agent="reviewer", status="finished", summary="approved" if approved else f"issues:\n{notes}"))
+        if approved and state.get("review_notes"):
+            await self._learn(_request(state), state["review_notes"])
         return {"approved": approved, "review_notes": "" if approved else notes, "steps": ["reviewer"]}
 
     async def respond(self, state: AgentState) -> dict[str, Any]:
@@ -245,6 +260,15 @@ class AgentGraph:
         answer = _text(out["messages"][-1].content) if out.get("messages") else ""
         emit(AgentStep(agent="responder", status="finished"))
         return {"messages": [AIMessage(answer)], "steps": ["responder"]}
+
+    @staticmethod
+    async def _learn(request: str, notes: str) -> None:
+        """Episodic memory: a change the reviewer rejected and a later round fixed becomes a lesson."""
+        lesson = f"For a request like '{request[:200]}', the reviewer first rejected the change for:\n{notes}"
+        try:
+            await long_term.remember(lesson, "lesson", source="review")
+        except Exception as e:  # never fail the turn over a memory
+            logger.warning("Could not store the review lesson", extra={"error": repr(e)})
 
     async def _run(self, name: str, agent: Any, prompt: str) -> str:
         emit(AgentStep(agent=name, status="started"))
@@ -280,11 +304,13 @@ class AgentGraph:
         graph.add_node("code", self.code)
         graph.add_node("review", self.review)
         graph.add_node("respond", self.respond)
+        graph.add_node("compress", self.compress)
+        graph.add_edge(START, "compress")
         if assemble is not None:
-            graph.add_edge(START, "assemble")
+            graph.add_edge("compress", "assemble")
             graph.add_edge("assemble", "route")
         else:
-            graph.add_edge(START, "route")
+            graph.add_edge("compress", "route")
         graph.add_conditional_edges("route", self.after_route, ["explore", "respond"])
         graph.add_conditional_edges("explore", self.after_explore, ["code", "respond"])
         graph.add_edge("code", "review")

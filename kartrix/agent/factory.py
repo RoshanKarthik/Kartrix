@@ -3,7 +3,7 @@ from typing import Any
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 
-from kartrix.agent.tools import search_codebase
+from kartrix.agent.tools import remember, search_codebase
 from kartrix.llm.factory import get_llm, get_model_middleware
 from kartrix.observability.logger import get_logger
 from kartrix.security.approvals import ApprovalMiddleware
@@ -26,7 +26,7 @@ If you cannot find the answer in the codebase, say so explicitly.
 {SECURITY_RULES}"""
 
 # Kartrix's own tools; MCP servers may not register tools with these names.
-NATIVE_TOOLS = [search_codebase, load_skill, *READ_TOOLS, *WRITE_TOOLS, run_command]
+NATIVE_TOOLS = [search_codebase, load_skill, *READ_TOOLS, *WRITE_TOOLS, run_command, remember]
 
 
 def agent_middleware(approval: ApprovalMiddleware | None, **model_kwargs: Any) -> list[AgentMiddleware]:
@@ -68,6 +68,7 @@ def build_agent(checkpointer, mcp_tools: list | None = None):
     """Create the chat agent: the multi-agent LangGraph graph (``kartrix.agent.graph``). It is rebuilt only
     when MCP servers connect/disconnect or skills are trusted, so every system prompt stays identical between
     those events (prompt caching)."""
+    from kartrix.agent.context import assemble
     from kartrix.agent.graph import AgentGraph
     from kartrix.config import settings
 
@@ -80,4 +81,4 @@ def build_agent(checkpointer, mcp_tools: list | None = None):
         skills=[load_skill],
         skills_prompt=build_skills_prompt(),
     )
-    return graph.compile(checkpointer)
+    return graph.compile(checkpointer, assemble=assemble)

@@ -1,5 +1,5 @@
 """The multi-agent chat graph (kartrix.agent.graph) with scripted models: routing, the explorer → coder ⇄
-reviewer loop, an approval raised inside a subagent pausing and resuming the whole graph, and budgets."""
+reviewer loop (and the lesson it leaves), an approval raised inside a subagent pausing and resuming the whole graph, and budgets."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from kartrix.agent import graph as graph_mod
 from kartrix.agent.factory import agent_middleware
 from kartrix.config import BudgetLimits, settings
 from kartrix.core.events import collecting
+from kartrix.memory import long_term
 from kartrix.sandbox.manager import set_sandbox
 from kartrix.security import permissions
 from kartrix.security import workspace as ws_mod
@@ -118,6 +119,8 @@ async def test_change_loops_until_the_reviewer_approves(ws: Path, monkeypatch: p
     assert (ws / "app.py").read_text() == fixed and (ws / "test_app.py").is_file()
     assert state["steps"] == ["router", "explorer", "coder", "reviewer", "coder", "reviewer", "responder"]
     assert state["approved"] is True and state["rounds"] == 2
+    (lesson,) = await long_term.list_memories()  # the rejection became an episodic lesson
+    assert (lesson.kind, lesson.source) == ("lesson", "review") and "no test for add" in lesson.content
 
 
 async def test_approval_inside_a_subagent_pauses_and_resumes_the_graph(
