@@ -12,7 +12,7 @@ import functools
 import os
 import threading
 import warnings
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from langchain.agents.middleware import AgentMiddleware, ModelFallbackMiddleware, ModelRetryMiddleware
@@ -20,6 +20,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 
 from kartrix.config import settings
+from kartrix.llm.fallback import acall_chain, call_chain
 from kartrix.llm.retry import RetryingEmbeddings, should_retry_model_call
 from kartrix.observability.logger import get_logger
 
@@ -47,6 +48,7 @@ def _require_env(name: str) -> str:
 
 def _build_chat_model(provider: str, model: str, **kwargs: Any) -> BaseChatModel:
     timeout = settings.llm.timeout
+    kwargs.setdefault("max_tokens", settings.llm.max_output_tokens)
     if provider == "nvidia":
         from langchain_nvidia_ai_endpoints import ChatNVIDIA
 
@@ -94,7 +96,9 @@ def get_fallback_chat_models(**kwargs: Any) -> list[BaseChatModel]:
 
 
 class LazyModelFallbackMiddleware(ModelFallbackMiddleware):
-    """``ModelFallbackMiddleware`` whose fallback models are built on first use.
+    """Fallback models built on first use, tried through the circuit-breaking chain in
+    :mod:`kartrix.llm.fallback` (skips dead providers, second chance for a timed-out primary, one
+    clear error when every model fails).
 
     Building a client means importing its SDK (``langchain_openai`` alone takes seconds on a
     cold start) for a model that is only needed when the primary fails — so it waits until then."""
@@ -116,6 +120,12 @@ class LazyModelFallbackMiddleware(ModelFallbackMiddleware):
     def models(self, value: list[BaseChatModel]) -> None:
         self._models = value
 
+    def wrap_model_call(self, request: Any, handler: Callable[[Any], Any]) -> Any:
+        return call_chain(request, handler, lambda: self.models)
+
+    async def awrap_model_call(self, request: Any, handler: Callable[[Any], Awaitable[Any]]) -> Any:
+        return await acall_chain(request, handler, lambda: self.models)
+
 
 def get_model_middleware(**kwargs: Any) -> list[AgentMiddleware]:
     """Middleware for ``create_agent``: fallback (outer) around retry (inner).
@@ -129,12 +139,12 @@ def get_model_middleware(**kwargs: Any) -> list[AgentMiddleware]:
     for fb in fallbacks:  # a missing key still fails at startup, not at the first fallback
         if fb.provider in _PROVIDER_KEYS:
             _require_env(_PROVIDER_KEYS[fb.provider])
-    if fallbacks:
-        middleware.append(
-            LazyModelFallbackMiddleware(
-                [functools.partial(_build_chat_model, fb.provider, fb.model, **kwargs) for fb in fallbacks]
-            )
+    # Always added: the circuit breaker and the clear error also matter without fallbacks.
+    middleware.append(
+        LazyModelFallbackMiddleware(
+            [functools.partial(_build_chat_model, fb.provider, fb.model, **kwargs) for fb in fallbacks]
         )
+    )
     middleware.append(
         ModelRetryMiddleware(
             max_retries=policy.max_retries,

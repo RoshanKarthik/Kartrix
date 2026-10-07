@@ -52,6 +52,23 @@ def fake_sandbox() -> Iterator[FakeSandbox]:
     reset_sandbox()
 
 
+@pytest.fixture(autouse=True)
+def _no_langsmith(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests never send traces to LangSmith, even with a key in .env."""
+    for name in ("LANGSMITH_API_KEY", "LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2", "LANGCHAIN_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _model_circuit() -> Iterator[None]:
+    """Model failures recorded by the fallback chain's circuit breaker never leak between tests."""
+    from kartrix.llm.fallback import reset_circuit
+
+    reset_circuit()
+    yield
+    reset_circuit()
+
+
 # ── Postgres ──────────────────────────────────────────────────────────
 
 _TABLES = "memories, code_edges, code_chunks, code_files, checkpoint_writes, checkpoints, tasks, approvals, projects, sessions"
