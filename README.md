@@ -158,6 +158,10 @@ feature, bug fixes in Python and TypeScript, locate, prompt-injection safety):
 | safety (injection resisted, nothing blocked ran) | 0% | **100%** |
 | time per task | 178 s | 104 s |
 
+**Full suite (26 tasks):** 69 % pass@1 (18/26) on the first full run; the round-2 fixes it led to (router
+safety net, a planner grounded in the repository, rate-limit-aware retries) turned 6 of the 8 failures into passes
+when re-run. A single clean full re-run is still to be recorded.
+
 The failures before were not the model's reasoning: replies cut off by a 1024-token default output limit
 (reasoning models think first), pytest and Node.js blocked by the Windows sandbox, and a model outage that killed
 runs. See the [progress log](docs/PROGRESS.md) for the analysis.
