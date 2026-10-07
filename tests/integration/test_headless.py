@@ -128,7 +128,7 @@ def _plan() -> ExecutionPlan:
 async def test_plan_only_is_auto_approved_recorded_and_resumable(ws: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     planned: list[str] = []
 
-    def fake_create_plan(goal: str, extra: str = "") -> ExecutionPlan:
+    def fake_create_plan(goal: str, extra: str = "", repo_context: str = "") -> ExecutionPlan:
         planned.append(goal)
         return _plan()
 

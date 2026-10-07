@@ -9,6 +9,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel
 
 from kartrix.agent.factory import agent_middleware
+from kartrix.agent.graph import WORKING_RULES
+from kartrix.agent.tools import search_codebase, symbol_graph
 from kartrix.llm.factory import get_chat_model, get_model_middleware
 from kartrix.observability.logger import get_logger
 from kartrix.security.approvals import (
@@ -28,16 +30,19 @@ logger = get_logger(__name__)
 
 # Each task type gets a minimal, focused toolset — least privilege per task.
 # All file tools are jailed to the workspace (kartrix.security.workspace).
+# Every task can search the code; tasks that change behaviour can run the tests (commands go through the
+# policy and the sandbox like everywhere else).
+_SEARCH = [search_codebase, symbol_graph]
 _TOOLS_BY_TYPE: dict[str, list] = {
-    "design": [*READ_TOOLS, write_file, edit_file],
-    "implement": [*READ_TOOLS, *WRITE_TOOLS],
-    "test": [*READ_TOOLS, *WRITE_TOOLS, run_command],
-    "review": [*READ_TOOLS, write_file, edit_file],
-    "integrate": [*READ_TOOLS, *WRITE_TOOLS, run_command],
-    "configure": [*READ_TOOLS, *WRITE_TOOLS],
+    "design": [*_SEARCH, *READ_TOOLS, write_file, edit_file],
+    "implement": [*_SEARCH, *READ_TOOLS, *WRITE_TOOLS, run_command],
+    "test": [*_SEARCH, *READ_TOOLS, *WRITE_TOOLS, run_command],
+    "review": [*_SEARCH, *READ_TOOLS, write_file, edit_file, run_command],
+    "integrate": [*_SEARCH, *READ_TOOLS, *WRITE_TOOLS, run_command],
+    "configure": [*_SEARCH, *READ_TOOLS, *WRITE_TOOLS, run_command],
 }
 
-_DEFAULT_TOOLS = [*READ_TOOLS, write_file, edit_file]
+_DEFAULT_TOOLS = [*_SEARCH, *READ_TOOLS, write_file, edit_file]
 
 
 def _parse_json_field(val) -> list:
@@ -65,8 +70,12 @@ def _build_system_prompt(task: dict, dep_outputs: list[dict]) -> str:
         parts = [f"[{dep['id']}] {dep['title']}\n{dep['result'] or '(no output recorded)'}" for dep in dep_outputs]
         prior_context = "\n\nPRIOR TASK OUTPUTS (from your dependencies):\n" + "\n\n".join(parts)
 
-    return f"""You are an expert software engineer executing a single well-defined task.
-Be thorough and complete. Always write all files to disk before finishing.
+    return f"""You are an expert software engineer executing one task of an approved plan in this repository.
+Work in the existing code: find what you need with search_codebase/read_file, read a file before changing it,
+use edit_file for changes to existing files and write_file only for new files. Match the existing style.
+When the task changes behaviour, run the project's tests with run_command and fix what fails.
+
+{WORKING_RULES}
 
 TASK ID:   {task["id"]}
 TASK TYPE: {task["task_type"]}
@@ -81,8 +90,8 @@ FILES TO PRODUCE:
 ACCEPTANCE CRITERIA (your output must satisfy ALL of these):
 {criteria_lines or "  (none specified)"}{prior_context}
 
-When done, summarise what you implemented in 3-5 bullet points.
-Do NOT leave any implementation incomplete.
+When done, summarise in 3-5 bullet points: the files you changed, what you changed and the test result.
+Don't leave the implementation incomplete; if something could not be done, say so plainly.
 
 {SECURITY_RULES}"""
 
@@ -121,7 +130,7 @@ async def _judge_task(task: dict, agent_output: str) -> _JudgeVerdict:
         tools=[],
         system_prompt=_JUDGE_SYSTEM_PROMPT,
         response_format=_JudgeVerdict,
-        middleware=[*get_model_middleware(temperature=0, max_tokens=1000), BudgetMiddleware()],
+        middleware=[*get_model_middleware(temperature=0), BudgetMiddleware()],
     )
 
     criteria = _parse_json_field(task.get("acceptance_criteria"))
@@ -165,9 +174,7 @@ async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None, a
     logger.info(f"Building agent for task {task['id']} (type={task['task_type']}, tools={[t.name for t in tools]})")
 
     # Without an approver there's no one to ask: commands needing approval are refused by the tool.
-    middleware = agent_middleware(
-        ApprovalMiddleware() if approver is not None else None, temperature=0, max_tokens=3000
-    )
+    middleware = agent_middleware(ApprovalMiddleware() if approver is not None else None, temperature=0)
     # Interrupts need a checkpointer; a task's run is not resumed across restarts (recovery
     # re-runs crashed tasks), so memory is enough. The thread id is not a UUID on purpose:
     # audit rows then take the session id from the orchestrator's audit scope.
@@ -180,13 +187,12 @@ async def run_subtask_agent(task: dict, dep_outputs: list[dict] | None = None, a
     )
     config = {"configurable": {"thread_id": f"task-{task['id']}-{uuid.uuid4().hex[:8]}"}}
 
-    # The project directory may be empty on first run — tell the agent to create files
-    # directly rather than spending turns exploring an empty directory.
+    # Existing repositories are the normal case: never overwrite code the agent hasn't read. A new project
+    # (empty folder) follows the same rules — there is just nothing to read first.
     user_message = (
         f"{task['description']}\n\n"
-        "The project directory may be empty — there is no existing code to read.\n"
-        "You must CREATE all output files from scratch using write_file.\n"
-        "Do not spend time listing directories. Go directly to writing the output files."
+        "Do this task in the current repository. If a file you need to change exists, read it first and edit it; "
+        "create only the files this task needs."
     )
 
     final_state: dict[str, Any] = {"messages": []}  # stays empty if the stream yields nothing

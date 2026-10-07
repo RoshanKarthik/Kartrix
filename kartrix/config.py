@@ -47,6 +47,9 @@ class RetrySettings(_Section):
     initial_delay: float = Field(1.0, gt=0)
     backoff_factor: float = Field(2.0, ge=1.0)
     max_delay: float = Field(30.0, gt=0)
+    # Rate limits (429) are per minute on free tiers: retried longer, honouring Retry-After (model calls).
+    rate_limit_retries: int = Field(6, ge=0, le=20)
+    rate_limit_max_delay: float = Field(60.0, gt=0)
 
 
 class EmbeddingsSettings(_Section):

@@ -24,7 +24,7 @@ from kartrix.security.approvals import Approver
 from kartrix.security.audit import audit_scope
 from kartrix.security.budget import RunStopped, raise_if_stopped, waiting_for_user
 from kartrix.tasks.executor import run_subtask_agent
-from kartrix.tasks.planner import ExecutionPlan, create_plan
+from kartrix.tasks.planner import ExecutionPlan, create_plan, planning_context
 from kartrix.tasks.recovery import RecoveryManager
 from kartrix.tasks.task_store import ProjectStatus, TaskStore
 
@@ -149,9 +149,10 @@ class TaskOrchestrator:
 async def _plan(goal: str, reviewer: PlanReviewer) -> ExecutionPlan:
     """Plan → review → re-plan with feedback until the reviewer approves."""
     extra_context = ""
+    repo_context = await planning_context(goal)  # files, repo map and the code relevant to the goal
     while True:
         notice("Planning (this may take a moment)...")
-        raw_plan = await asyncio.to_thread(create_plan, goal, extra_context)
+        raw_plan = await asyncio.to_thread(create_plan, goal, extra_context, repo_context)
         emit(PlanProposed(plan=raw_plan.model_dump(mode="json")))
         with waiting_for_user():  # reading the plan doesn't use the time budget
             review = await reviewer(raw_plan)

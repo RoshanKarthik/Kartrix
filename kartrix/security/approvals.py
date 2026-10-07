@@ -107,7 +107,11 @@ def _mode_label() -> str:
 def _decline_message(call: ToolCall, reason: str | None) -> ToolMessage:
     text = f"Error: the user declined this {'command' if call['name'] == 'run_command' else 'tool call'}"
     text += f": {reason}" if reason else "."
-    text += " It was not run. Don't run it again unless the user asks; continue without it or ask them how to proceed."
+    text += (
+        " It was not run. Don't run it again unless the user asks, and don't try to get the same result another way"
+        " (a different command, a script, another tool): continue with the rest of the task and tell the user what"
+        " is left for them to do."
+    )
     return ToolMessage(content=text, name=call["name"], tool_call_id=call["id"] or "", status="error")
 
 

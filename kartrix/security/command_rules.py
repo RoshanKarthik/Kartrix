@@ -129,7 +129,7 @@ def classify(argv: list[str], cwd: Path, depth: int = 0) -> Classification:
 
     if prog in HARD_DENY or prog.startswith("mkfs"):
         return _c(Category.DENY, f"{prog} changes the system outside the project")
-    if args in _VERSION_ARGS:
+    if args in _VERSION_ARGS and prog not in NETWORK_PROGRAMS:  # network tools always ask, even for --version
         return _c(Category.READ, "version/help")
     if prog in SHELLS:
         return _classify_shell(prog, args)

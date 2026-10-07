@@ -15,13 +15,14 @@ import warnings
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
-from langchain.agents.middleware import AgentMiddleware, ModelFallbackMiddleware, ModelRetryMiddleware
+from langchain.agents.middleware import AgentMiddleware, ModelFallbackMiddleware
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 
 from kartrix.config import settings
 from kartrix.llm.fallback import acall_chain, call_chain
-from kartrix.llm.retry import RetryingEmbeddings, should_retry_model_call
+from kartrix.llm.model_retry import RateAwareRetryMiddleware
+from kartrix.llm.retry import RetryingEmbeddings
 from kartrix.observability.logger import get_logger
 
 logger = get_logger(__name__)
@@ -133,7 +134,6 @@ def get_model_middleware(**kwargs: Any) -> list[AgentMiddleware]:
     Order matters — the retry wraps each model attempt, so the primary is retried
     with backoff first, then each fallback model in turn gets the same retry budget.
     """
-    policy = settings.llm.retry
     middleware: list[AgentMiddleware] = []
     fallbacks = settings.llm.fallbacks
     for fb in fallbacks:  # a missing key still fails at startup, not at the first fallback
@@ -145,17 +145,9 @@ def get_model_middleware(**kwargs: Any) -> list[AgentMiddleware]:
             [functools.partial(_build_chat_model, fb.provider, fb.model, **kwargs) for fb in fallbacks]
         )
     )
-    middleware.append(
-        ModelRetryMiddleware(
-            max_retries=policy.max_retries,
-            retry_on=should_retry_model_call,
-            on_failure="error",  # surface the error so the fallback middleware can act on it
-            initial_delay=policy.initial_delay,
-            backoff_factor=policy.backoff_factor,
-            max_delay=policy.max_delay,
-            jitter=True,
-        )
-    )
+    # Per model: 429 waits as long as the provider asks (or up to a minute), other transient errors back off
+    # briefly; the error then reaches the fallback chain above.
+    middleware.append(RateAwareRetryMiddleware())
     return middleware
 
 

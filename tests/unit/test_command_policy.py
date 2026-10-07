@@ -418,3 +418,8 @@ def test_scrubbed_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert scrubbed_env(base) == {"PATH": "/bin", "LANG": "C"}
     monkeypatch.setattr(settings.permissions, "env_passthrough", ["ssh_auth_sock"])
     assert "SSH_AUTH_SOCK" in scrubbed_env(base)
+
+
+def test_network_tools_ask_even_for_version(root: Path) -> None:
+    assert evaluate("curl --version", mode="default").action == "ask"
+    assert evaluate("git --version", mode="default").action == "allow"

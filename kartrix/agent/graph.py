@@ -32,6 +32,7 @@ the previous step's report and the request, last — not each other's tool noise
 from __future__ import annotations
 
 import operator
+import re
 from typing import Annotated, Any, Literal, TypedDict
 
 from langchain.agents import create_agent
@@ -89,7 +90,15 @@ ROUTER_PROMPT = """You route requests for a coding assistant working inside a co
 Decide how to handle the user's latest message:
 - chat: greetings, thanks, questions about you, anything not about this repository's code
 - question: understanding, locating or explaining code — nothing must change
-- change: create, edit, fix, refactor, test or run something in the repository"""
+- change: create, edit, fix, refactor, test or run something in the repository
+
+Examples:
+- "Add a --json flag to the stats command" → change
+- "slugify returns X but should return Y" → change (a bug report asks for a fix)
+- "Write tests for the parser" / "Rename foo to bar" / "Run the tests" → change
+- "Where is the config loaded?" / "Why does login fail?" / "What does paginate do?" → question
+- "Thanks!" / "Which model are you?" → chat
+When unsure between question and change, choose change if the user expects files to be different afterwards."""
 
 EXPLORER_PROMPT = f"""You are the explorer: a read-only code investigator.
 Find what the request needs in this repository: use search_codebase first, then grep, glob and read_file
@@ -99,18 +108,20 @@ If something can't be found, say so. If you learn a lasting convention about thi
 with remember.
 {SECURITY_RULES}"""
 
-CODER_PROMPT = f"""You are the coder: you implement changes in this repository.
-Make the smallest correct change that does what was asked, matching the existing code style. Read a
-file before editing it; use edit_file for small changes. Add or update tests when behaviour changes and
-run the project's tests with run_command (e.g. "pytest -q", "node --test", "npm test").
-
-Working rules:
+WORKING_RULES = """Working rules:
 - run_command runs one program directly — no shell, no pipes, no "&&", no "cmd /c", no "python -c".
   Never write helper scripts to work around a command; put checks into the project's tests instead.
 - If a command fails because of the environment (a missing tool, a permission or sandbox error) rather
   than the code, don't fight it: stop and say so in your report.
 - Only create the files the task needs. Delete any temporary file you created with delete_file.
-- Don't re-read a file you already read unless you changed it since.
+- Don't re-read a file you already read unless you changed it since."""
+
+CODER_PROMPT = f"""You are the coder: you implement changes in this repository.
+Make the smallest correct change that does what was asked, matching the existing code style. Read a
+file before editing it; use edit_file for small changes. Add or update tests when behaviour changes and
+run the project's tests with run_command (e.g. "pytest -q", "node --test", "npm test").
+
+{WORKING_RULES}
 
 Finish with a short report: the files you changed, what you changed and the result of the tests. Follow
 the project instructions and remembered preferences and lessons you are given; save a new lasting fact
@@ -122,13 +133,18 @@ Read the changed files and run the project's tests with run_command (one program
 only if the change does everything that was asked, is correct, keeps the existing behaviour and style,
 the tests pass, and no unrelated files (scratch scripts, notes, debug output) were added. Otherwise list
 concrete issues to fix. Do not edit files yourself, and don't retry a command that fails because of the
-environment — report it as an issue.
+environment — report it as an issue. A step the user declined or the permissions blocked (a download, an install)
+can't be done in this run: don't ask for it again — judge the rest, and approve when the rest is right and the
+coder's report says plainly what was not done.
 {SECURITY_RULES}"""
 
 RESPOND_PROMPT = """You are Kartrix, a senior software engineer helping the user with their repository.
 Answer the user's latest message using the reports from your team (explorer, coder, reviewer) below.
-Reference specific files, functions and line numbers. If the work was stopped or the reviewer still
-had issues, say so plainly. Be concise."""
+Reference specific files, functions and line numbers. Be concise.
+When the team made a change, it is already done — the files listed under "Files changed" contain it. Say what
+was changed and the test result; never tell the user to make the change themselves. The explorer's notes are
+from before the change. If the work was stopped, a step was declined or blocked, or the reviewer still had
+issues, say so plainly and say what is left."""
 
 
 def _text(content: Any) -> str:
@@ -171,6 +187,20 @@ def _written_files(events: list[Event], before: list[str]) -> list[str]:
         ):
             out.append(path)
     return out
+
+
+_CHANGE_VERBS = re.compile(
+    r"^\s*(?:please\s+|can you\s+|could you\s+)?(?:add|fix|implement|create|make|change|update|remove|delete|"
+    r"rename|refactor|write|build|replace|move|convert|support|handle|improve|optimi[sz]e|migrate|upgrade|bump|"
+    r"edit|set up|setup|install|extend|split|merge|introduce|drop|clean up|reformat|format|run)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_change(request: str) -> bool:
+    """An imperative request ("Add …", "Fix …", "Please rename …") asks for files to change, whatever the router
+    model thought: a small router occasionally calls those questions, and then nothing gets done."""
+    return bool(_CHANGE_VERBS.match(request))
 
 
 def _stopped() -> str | None:
@@ -240,6 +270,9 @@ class AgentGraph:
         except Exception as e:  # a router failure must not lose the request: treat it as a question
             logger.warning("Router failed; treating the request as a question", extra={"error": repr(e)})
             route = "question"
+        if route == "question" and looks_like_change(request):
+            logger.info("Router said question for an imperative request; treating it as a change")
+            route = "change"
         emit(AgentStep(agent="router", status="finished", summary=route))
         return {
             "route": route,
@@ -290,7 +323,10 @@ class AgentGraph:
             return {"messages": [AIMessage(f"Stopped: {reason}.")]}
         parts = []
         if state.get("findings"):
-            parts.append(f"## Explorer's findings\n{state['findings']}")
+            when = " (from before the change)" if state.get("route") == "change" else ""
+            parts.append(f"## Explorer's findings{when}\n{state['findings']}")
+        if state.get("changed_files"):
+            parts.append("## Files changed\n" + "\n".join(f"- {f}" for f in state["changed_files"]))
         if state.get("change_report"):
             parts.append(f"## Coder's report\n{state['change_report']}")
         if state.get("route") == "change":

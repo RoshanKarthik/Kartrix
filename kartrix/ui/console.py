@@ -25,6 +25,7 @@ class ConsoleRenderer:
         self._held: list[ev.Event] | None = None
         self._lock = threading.Lock()
         self._streamed: set[str | None] = set()  # runs whose answer was already printed token by token
+        self._working: str | None = None  # the agent whose "working…" line is on screen (resumes re-announce it)
 
     def hold(self) -> None:
         """Keep events back (e.g. while the prompt waits for input) until :meth:`release`."""
@@ -78,12 +79,17 @@ class ConsoleRenderer:
                 parts = [f"{s.name} {s.tokens}/{s.budget}" + (f" ({s.items})" if s.items else "") for s in sections]
                 note = f" · {stale} possibly stale" if stale else ""
                 self._line(f"◇ context: {' · '.join(parts)} tokens{note}", "dim")
-            case ev.AgentStep(agent="router", status="finished", summary=route):
-                self._line(f"◆ router: {route}", "dim")
             case ev.AgentStep(agent=agent, status="started") if agent in ("explorer", "coder", "reviewer"):
-                self._line(f"◆ {agent} working…", "cyan")
-            case ev.AgentStep(agent="reviewer", status="finished", summary=summary):
-                self._line(f"◆ reviewer: {summary}", "green" if summary == "approved" else "yellow")
+                if agent != self._working:  # after an approval the graph resumes the same step: say it once
+                    self._working = agent
+                    self._line(f"◆ {agent} working…", "cyan")
+            case ev.AgentStep(status="finished"):
+                self._working = None
+                if event.agent == "router":
+                    self._line(f"◆ router: {event.summary}", "dim")
+                elif event.agent == "reviewer":
+                    style = "green" if event.summary == "approved" else "yellow"
+                    self._line(f"◆ reviewer: {event.summary}", style)
             case ev.PlanReviewed(approved=False):
                 self._line("Re-planning with your feedback...", "dim")
             case ev.ProjectStarted(project_id=pid, resumed=True, recovered=recovered):
