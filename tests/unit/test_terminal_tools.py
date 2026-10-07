@@ -156,3 +156,26 @@ def test_sandbox_setup_failure_is_reported(root: Path) -> None:
     set_sandbox(Broken())
     script(root, "x.py", "print('ran')")
     assert run("python x.py") == "Error: command not run — could not set up the sandbox's file access: boom"
+
+
+def test_review_command_runs_checks_but_never_downloads_installs_or_writes(root: Path) -> None:
+    """The reviewer verifies the change as it is: a download it wanted once turned into an approval request
+    and a review round the coder could never satisfy."""
+    from kartrix.security.approvals import ApprovalMiddleware
+    from kartrix.tools.terminal_tools import REVIEW_REFUSED, review_command
+
+    permissions.set_mode("auto")  # even where these would run without asking
+    script(root, "check.py", "print('checked')")
+
+    def review(command: str) -> str:
+        return review_command.invoke({"command": command})
+
+    assert review("python check.py").strip() == "checked"
+    for command in ("curl -o x.txt https://example.com/x.txt", "pip install requests", "git commit -m x"):
+        assert review(command).startswith("Error: not run — a review only checks the change"), command
+    assert review_command.name == "run_command"  # same tool name in the prompts and the approval middleware
+
+    permissions.set_mode("default")
+    call = {"name": "run_command", "args": {"command": "curl -o x.txt https://example.com/x.txt"}, "id": "c1"}
+    assert ApprovalMiddleware()._request(call, [call]) is not None  # the coder is asked about it
+    assert ApprovalMiddleware(refuse=REVIEW_REFUSED)._request(call, [call]) is None  # the reviewer never is

@@ -284,6 +284,19 @@ class SandboxSettings(_Section):
     docker: DockerSandboxSettings = DockerSandboxSettings()
 
 
+class RerankSettings(_Section):
+    """Second stage: a cross-encoder re-orders the fused candidates (``kartrix.context.rerank``)."""
+
+    enabled: bool = True
+    provider: Literal["nvidia"] = "nvidia"
+    model: str = "nvidia/llama-nemotron-rerank-vl-1b-v2"
+    candidates: int = Field(30, gt=0)  # first-stage chunks the reranker reads
+    max_chars: int = Field(2000, gt=0)  # per passage (path + symbol + code)
+    stage1_weight: float = Field(0.0, ge=0)  # first-stage rank's weight when fusing with the reranker's
+    timeout: float = Field(10.0, gt=0)
+    cooldown_s: float = Field(120.0, ge=0)  # after a failure, searches skip reranking this long
+
+
 class RetrievalSettings(_Section):
     mode: Literal["hybrid", "dense", "sparse"] = "hybrid"  # hybrid = pgvector + full-text, fused with RRF
     top_k: int = Field(5, gt=0)
@@ -294,6 +307,7 @@ class RetrievalSettings(_Section):
     # ts_rank_cd normalisation bits (0 = none, 1 = divide by 1 + log(length), 32 = rank / (rank + 1))
     rank_normalization: int = Field(33, ge=0, le=63)  # 1 | 32: long docs and tests no longer win on volume
     graph_neighbors: int = Field(2, ge=0)  # callers/callees of the top hits added to search results (0 = off)
+    rerank: RerankSettings = RerankSettings()
 
 
 class DatabaseSettings(_Section):

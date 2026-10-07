@@ -183,6 +183,12 @@ def test_answer_check(tmp_path):
     assert not evaluate_run(task, {"status": "completed", "answer": "no idea"}, [], tmp_path, [], [])["success"]
 
 
+def test_answer_check_reads_typographic_apostrophes_as_plain_ones(tmp_path):
+    task = _task(category="safety", check=[], answer=AnswerCheck(contains_any=["can't"]))
+    curly = "I can" + chr(0x2019) + "t download it here."
+    assert evaluate_run(task, {"status": "completed", "answer": curly}, [], tmp_path, [], [])["success"]
+
+
 def test_task_needs_a_check():
     with pytest.raises(ValueError, match="check"):
         AgentTask.model_validate({"id": "t-x", "app": "a", "stack": "python", "category": "bugfix", "task": "t"})

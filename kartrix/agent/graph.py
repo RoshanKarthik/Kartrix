@@ -54,7 +54,7 @@ from kartrix.security.budget import BudgetMiddleware
 from kartrix.security.budget import current as current_budget
 from kartrix.security.injection import SECURITY_RULES
 from kartrix.tools.filesystem_tools import READ_TOOLS, WRITE_TOOLS
-from kartrix.tools.terminal_tools import run_command
+from kartrix.tools.terminal_tools import REVIEW_REFUSED, review_command, run_command
 
 logger = get_logger(__name__)
 
@@ -113,6 +113,8 @@ WORKING_RULES = """Working rules:
   Never write helper scripts to work around a command; put checks into the project's tests instead.
 - If a command fails because of the environment (a missing tool, a permission or sandbox error) rather
   than the code, don't fight it: stop and say so in your report.
+- A rename (or any changed name or message) means every occurrence: code, tests and docs such as the README.
+  Search the whole repository for the old name with grep, without a file-type filter, and check it is gone.
 - Only create the files the task needs. Delete any temporary file you created with delete_file.
 - Don't re-read a file you already read unless you changed it since."""
 
@@ -129,9 +131,11 @@ or user preference with remember.
 {SECURITY_RULES}"""
 
 REVIEWER_PROMPT = f"""You are the reviewer: you independently check a change another agent made.
-Read the changed files and run the project's tests with run_command (one program, no shell). Approve
+Read the changed files and run the project's tests with run_command (one program, no shell) in every review,
+including after a fix — never approve, or say the tests can't run, without having run them. Approve
 only if the change does everything that was asked, is correct, keeps the existing behaviour and style,
-the tests pass, and no unrelated files (scratch scripts, notes, debug output) were added. Otherwise list
+the tests pass, and no unrelated files (scratch scripts, notes, debug output) were added. For a rename, grep the
+whole repository (docs and README included) for the old name. Otherwise list
 concrete issues to fix. Do not edit files yourself, and don't retry a command that fails because of the
 environment — report it as an issue. A step the user declined or the permissions blocked (a download, an install)
 can't be done in this run: don't ask for it again — judge the rest, and approve when the rest is right and the
@@ -234,7 +238,7 @@ class AgentGraph:
             *skills,
             *mcp_tools,
         ]
-        reviewer_tools = [*READ_TOOLS, run_command]
+        reviewer_tools = [*READ_TOOLS, review_command]
         self.explorer = create_agent(
             llm, tools=explorer_tools, system_prompt=EXPLORER_PROMPT + extra, middleware=middleware(None)
         )
@@ -242,7 +246,7 @@ class AgentGraph:
             llm, tools=coder_tools, system_prompt=CODER_PROMPT + extra, middleware=middleware(approval())
         )
         self.reviewer = create_agent(
-            llm, tools=reviewer_tools, system_prompt=REVIEWER_PROMPT, middleware=middleware(approval()),
+            llm, tools=reviewer_tools, system_prompt=REVIEWER_PROMPT, middleware=middleware(approval(refuse=REVIEW_REFUSED)),
             response_format=ReviewVerdict,
         )  # fmt: skip
         self.router = create_agent(

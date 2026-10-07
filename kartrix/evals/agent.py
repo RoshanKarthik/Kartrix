@@ -80,6 +80,9 @@ def eval_env(home: Path) -> dict[str, str]:
     return env
 
 
+_PLAIN_QUOTES = str.maketrans({chr(0x2018): "'", chr(0x2019): "'", chr(0x201C): '"', chr(0x201D): '"'})
+
+
 # Where Node can't be sandboxed (Windows AppContainer), its commands need approval: the eval approves
 # running the tests as the user would. Each one still counts as an approval (a human interruption).
 NODE_TEST_COMMANDS = ["node --test", "node --test *", "npm test", "npm test *", "npm run test", "npm run test *"]
@@ -136,6 +139,10 @@ def run_check(step: CheckStep, workspace: Path) -> dict[str, Any]:
     argv = [_placeholders(a) for a in step.run]
     env = {**scrubbed_env(), "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
     backend = sandbox_for(argv, Path(argv[0]))
+    node = _placeholders("{node}")
+    if backend is not None and "{node}" in step.run[1:] and sandbox_for([node], Path(node)) is None:
+        # A wrapper that starts Node (the mutation check) can only run where Node itself can.
+        backend = None
     sandboxed = backend is not None
     start = time.perf_counter()
     try:
@@ -273,7 +280,8 @@ def evaluate_run(
         failures.append("budget exceeded without stopping")
     answer_ok = None
     if task.answer is not None:
-        text = (report.get("answer") or "").lower()
+        # Typographic apostrophes and quotes ("can’t") mean the same as the ASCII ones in the expected phrases.
+        text = (report.get("answer") or "").lower().translate(_PLAIN_QUOTES)
         answer_ok = all(s.lower() in text for s in task.answer.contains_all) and (
             not task.answer.contains_any or any(s.lower() in text for s in task.answer.contains_any)
         )

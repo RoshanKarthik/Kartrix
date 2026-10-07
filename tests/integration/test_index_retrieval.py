@@ -99,3 +99,22 @@ async def test_repos_are_isolated(code_repo: Path, tmp_path: Path, fake_embedder
     await index_repo(code_repo)
     await index_repo(other)
     assert {r["source"] for r in await retrieve("verify password", repo_root=other)} == {"x.py"}
+
+
+async def test_reranker_reorders_the_fused_candidates(code_repo: Path, fake_embedder: HashingEmbeddings) -> None:
+    """Stage 2 reads all first-stage candidates (not just top k) and decides the final order."""
+    from kartrix.context.rerank import set_reranker
+
+    seen: list[int] = []
+
+    def prefer_docs(query: str, passages: list[str]) -> list[float]:
+        seen.append(len(passages))
+        return [1.0 if p.startswith("docs/") else 0.0 for p in passages]
+
+    await index_repo(code_repo)
+    set_reranker(lambda: prefer_docs)
+    hits = await retrieve("verify password", k=1, repo_root=code_repo)
+    assert seen == [3]  # every candidate in the repo, though k = 1
+    assert [h["source"] for h in hits] == ["docs/guide.md"]
+    plain = await retrieve("verify password", k=1, repo_root=code_repo, rerank=False)
+    assert plain[0]["source"] == "auth/login.py" and seen == [3]

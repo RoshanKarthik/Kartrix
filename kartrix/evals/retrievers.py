@@ -2,8 +2,10 @@
 
 - ``dense``    pgvector cosine search over the embedded chunks
 - ``lexical``  Postgres full-text search (``sparse`` in ``retrieval.mode``)
-- ``hybrid``   both, fused with reciprocal rank fusion (the default)
-- ``graph``    hybrid, with the last results swapped for callers/callees of the top hits from the code
+- ``hybrid``   both, fused with reciprocal rank fusion (the first stage of the default)
+- ``dense_rerank`` / ``hybrid_rerank`` that first stage, then the cross-encoder reranker
+  (``retrieval.rerank``) re-orders its ``rerank.candidates`` best chunks. The plain modes never rerank.
+- ``graph``    the configured pipeline (hybrid → rerank by default), with the last results swapped for callers/callees of the top hits from the code
   graph (GraphRAG, ``retrieval.graph_neighbors`` of them) — same k, so it compares fairly with hybrid
 - ``search_first`` no index at all: ranks the repository's files by how well they match the question's
   words (what an agent finds with grep/glob before it reads), returning the best-matching window of
@@ -26,7 +28,7 @@ from kartrix.context.indexers.pg_index import split_identifiers
 Chunk = dict[str, Any]
 Retriever = Callable[[str, Path, int], Awaitable[list[Chunk]]]
 
-INDEX_MODES = ("dense", "lexical", "hybrid", "graph")
+INDEX_MODES = ("dense", "lexical", "hybrid", "dense_rerank", "hybrid_rerank", "graph")
 ALL_MODES = (*INDEX_MODES, "search_first", "repo_map")
 DEFAULT_MODES = (*INDEX_MODES, "search_first")
 UNAVAILABLE = {"repo_map": "built in step 3.2"}
@@ -136,10 +138,11 @@ async def _graph(query: str, root: Path, k: int) -> list[Chunk]:
 def _index_mode(mode: str) -> Retriever:
     from kartrix.context.retrievers.pg_hybrid import retrieve
 
-    sql_mode = "sparse" if mode == "lexical" else mode
+    base, _, stage2 = mode.partition("_")
+    sql_mode = "sparse" if base == "lexical" else base
 
     async def run(query: str, root: Path, k: int) -> list[Chunk]:
-        return await retrieve(query, k=k, repo_root=root, mode=sql_mode)  # type: ignore[arg-type]
+        return await retrieve(query, k=k, repo_root=root, mode=sql_mode, rerank=stage2 == "rerank")  # type: ignore[arg-type]
 
     return run
 

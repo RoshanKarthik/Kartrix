@@ -5,20 +5,45 @@ graph), routes each request through a LangGraph multi-agent graph — **explorer
 command through a command policy and an OS-native sandbox, asks before anything risky, and lets you undo every
 change. It runs locally with your own LLM keys (free NVIDIA NIM models by default).
 
+A real run (`kartrix run`, headless, on the demo app from [docs/DEMO.md](docs/DEMO.md); the REPL renders the same
+events — only the startup lines left out and the answer shortened):
+
 ```text
-you ▸ Fix slugify: accents must be removed and words separated by single dashes.
-◇ context: repo_map 96/400 tokens
+Working on: slugify("Crème brûlée, à la carte!") should return "creme-brulee-a-la-carte" — fix slugify.
+◇ context: memory 182/600 (1) tokens
 ◆ router: change
 ◆ explorer working…
   → search_codebase slugify
   → read_file src/slugify.ts
+  → read_file tests/utils.test.ts
+  → grep Crème
 ◆ coder working…
+  → search_codebase slugify
+  → read_file src/slugify.ts
+  → glob **/*slugify*
+  → grep normalize
   → edit_file src/slugify.ts
-  → run_command node --test          (approved — Node runs outside the Windows sandbox)
+  ✗ edit_file: error
+  → read_file src/slugify.ts
+  → edit_file src/slugify.ts
+  → read_file src/slugify.ts
+  → read_file tests/utils.test.ts
+  → read_file tests/utils.test.ts
+  → append_file tests/utils.test.ts
+  → read_file tests/utils.test.ts
+◆ reviewer working…
+  → list_directory .
+  → read_file src/slugify.ts
+  → read_file tests/utils.test.ts
+  → read_file package.json
+  → run_command node --test
+  → read_file src/index.ts
 ◆ reviewer: approved
-slugify now normalises to NFD, strips the combining accents and collapses runs of
-separators into one dash — src/slugify.ts:3-9; all 6 tests pass.
-Changed 1 file(s) — /undo reverts them
+
+The slugify function has been updated in src/slugify.ts (lines 1–12): it lower-cases the string, normalises
+to NFD and strips the accents, collapses every run of non-alphanumeric characters into one hyphen and trims
+leading/trailing hyphens. tests/utils.test.ts gets the case from the request; all tests pass.
+Changed 2 file(s) — /undo reverts them
 ```
 
 ## Contents
@@ -40,7 +65,7 @@ flowchart LR
     MW --> LLM["LLMs<br/>NIM Nemotron 120B · gpt-oss-20b router<br/>fallbacks: Gemma, Qwen (HF)"]
     G --> TOOLS["tools: search_codebase · symbol_graph ·<br/>read/edit/write/delete file · grep · glob ·<br/>run_command · remember · MCP"]
     TOOLS --> POL["command policy<br/>(allow / ask / deny, modes)"] --> SBX["OS sandbox<br/>AppContainer · bubblewrap/Landlock ·<br/>Seatbelt · Docker"]
-    TOOLS --> RAG["hybrid retrieval<br/>pgvector HNSW + full-text, weighted RRF<br/>+ code graph (calls/imports)"]
+    TOOLS --> RAG["hybrid retrieval<br/>pgvector HNSW + full-text, weighted RRF<br/>→ cross-encoder rerank<br/>+ code graph (calls/imports)"]
     RAG --> PG[("Postgres + pgvector<br/>chunks · edges · memories ·<br/>checkpoints · audit log")]
     CORE --> TR["traces: .kartrix/traces<br/>(+ LangSmith if keyed)"]
 ```
@@ -62,7 +87,7 @@ flowchart LR
 
 | Layer | What it does | Code |
 |---|---|---|
-| Retrieval | tree-sitter chunks (big classes split per method), 2048-d NIM embeddings in pgvector (HNSW), Postgres full-text, **weighted RRF** fused in one SQL query; incremental indexing; secrets redacted before embedding | `kartrix/context/` |
+| Retrieval | tree-sitter chunks (big classes split per method), 2048-d NIM embeddings in pgvector (HNSW), Postgres full-text, **weighted RRF** fused in one SQL query, then a **cross-encoder reranker** (NIM) re-orders the top 30; incremental indexing; secrets redacted before embedding | `kartrix/context/`, `context/rerank.py` |
 | Code graph | call/import edges from tree-sitter, resolved through imports; neighbours of the top hits, `symbol_graph` ("who calls X"), a repo map | `context/indexers/code_graph.py`, `context/retrievers/graph.py` |
 | Context engineering | per-section token budgets, stable-first prompts (cache-friendly), conversation compression, long-term memory (facts, preferences, lessons from rejected reviews) | `agent/context.py`, `memory/long_term.py` |
 | Reliability | fallback chain with a circuit breaker, empty/cut-off turn recovery, tool errors returned to the model, honest run status | `llm/fallback.py`, `agent/reliability.py` |
@@ -131,40 +156,48 @@ kartrix sandbox check                                                       # wh
 
 ## Measured results
 
-All numbers below were measured on 2026-10-07 on a Windows 11 laptop with the free NIM models
-(`nemotron-3-super-120b-a12b` main, `gpt-oss-20b` router, `nemotron-3-embed-1b` embeddings), live API calls,
+All numbers below were measured on 2026-10-08 on a Windows 11 laptop with the free NIM models
+(`nemotron-3-super-120b-a12b` main, `gpt-oss-20b` router, `nemotron-3-embed-1b` embeddings, `llama-nemotron-rerank-vl-1b-v2` reranker), live API calls,
 real sandbox. They are from Kartrix's own eval suite (`kartrix eval`), not from external benchmarks.
 
 **Retrieval** — 100 hand-labelled questions over 3 repositories (this one, the FastAPI full-stack template, an
-Express + Prisma API), hit@5 = a file that answers the question is in the top 5:
+Express + Prisma API), hit@5 = a file that answers the question is in the top 5 (measured 2026-10-08):
 
-| Mode | Hit@5 | Recall@5 | MRR | nDCG@10 |
-|---|---|---|---|---|
-| Dense (pgvector HNSW) | 88% | 83% | 0.70 | 0.74 |
-| **Hybrid — default** (weighted RRF, tuned) | **80%** (was 71%) | 75% | 0.60 (was 0.53) | 0.65 |
-| Hybrid + code-graph neighbours | 80% | 75% | 0.60 | 0.65 |
-| Lexical only (Postgres full-text) | 45% | 42% | 0.28 | 0.34 |
+| Mode | Hit@5 | Recall@5 | MRR | nDCG@10 | p50 latency |
+|---|---|---|---|---|---|
+| **Hybrid + cross-encoder rerank — default** | **91%** | **87%** | 0.68 | 0.72 | 626 ms |
+| Dense + rerank | 92% | 88% | 0.68 | 0.73 | 632 ms |
+| Dense (pgvector HNSW) | 88% | 83% | 0.70 | 0.74 | 421 ms |
+| Hybrid, no rerank (weighted RRF, tuned: was 71%) | 80% | 75% | 0.60 | 0.65 | 58 ms |
+| Lexical only (Postgres full-text) | 45% | 42% | 0.28 | 0.34 | 34 ms |
 
-Hybrid stays the default although dense scores higher here: the golden questions avoid identifiers on purpose,
-while the agent's own searches are often exact identifiers, where full-text matching finds what embeddings miss.
-The graph expansion shows no gain at file level on this set.
+The reranker (NIM `llama-nemotron-rerank-vl-1b-v2`) re-orders the 30 best fused candidates: **+11 points hit@5**
+over the fusion alone. Hybrid stays the first stage although dense + rerank is one question better here: the
+golden questions avoid identifiers on purpose, while the agent's own searches are often exact identifiers, where
+full-text matching finds what embeddings miss. Fusing the first-stage rank back in raised MRR (0.74) but lowered
+hit@5 (88–90 %), so it is off. Code-graph neighbours show no gain at file level on this set.
 
-**Agent** — coding tasks run headless in fresh workspaces, checked by hidden tests (quick subset of 6 tasks:
-feature, bug fixes in Python and TypeScript, locate, prompt-injection safety):
+**Agent** — the full suite: 26 coding tasks on 4 small apps (Python CLI and API, TypeScript API and library) —
+bug fixes, features, refactors, renames, writing tests (scored by mutation testing), explain/locate questions,
+plan mode, budget limits and prompt-injection / network safety. Each task runs headless in a fresh workspace and is
+checked by hidden tests the agent never sees. Final run, 2026-10-08, one run per task:
 
-| | Before the reliability pass | After |
+| | First full run (before the round-2 fixes) | **Final run** |
 |---|---|---|
-| pass@1 | 17% (1/6) | **100% (6/6)** |
-| safety (injection resisted, nothing blocked ran) | 0% | **100%** |
-| time per task | 178 s | 104 s |
+| pass@1 | 69% (18/26) | **96% (25/26)** — Python 16/16, TypeScript 9/10 |
+| safety (injection resisted, network refused, nothing blocked ran) | 67% | **100%** (0 blocked commands ran) |
+| budget limits respected | — | 100% |
+| time per task (mean / p50) | 88 s | 108 s / 78 s |
+| tokens per task (mean) | 131k | 138k |
 
-**Full suite (26 tasks):** 69 % pass@1 (18/26) on the first full run; the round-2 fixes it led to (router
-safety net, a planner grounded in the repository, rate-limit-aware retries) turned 6 of the 8 failures into passes
-when re-run. A single clean full re-run is still to be recorded.
+The one failure (`ts-shop-quantity-validation`) is a spec-reading miss: the agent coerced `"2"` with `Number()`
+although the task lists the string `"2"` as invalid; the same task passed in the run before. Along the way, two
+"failures" turned out to be eval bugs, not agent errors (a mutation check that could never run inside the Windows
+sandbox, and a refusal written with a typographic apostrophe) — fixed in the harness and logged.
 
-The failures before were not the model's reasoning: replies cut off by a 1024-token default output limit
-(reasoning models think first), pytest and Node.js blocked by the Windows sandbox, and a model outage that killed
-runs. See the [progress log](docs/PROGRESS.md) for the analysis.
+On the quick subset (6 tasks), the reliability pass took pass@1 from 17% to 100% and safety from 0% to 100%: the
+failures were replies cut off by a 1024-token default output limit (reasoning models think first), pytest and
+Node.js blocked by the Windows sandbox, and model outages. See the [progress log](docs/PROGRESS.md).
 
 ## Evals
 
@@ -201,10 +234,21 @@ also traced to LangSmith (`tracing.langsmith: off` disables it) — that sends p
 git config core.hooksPath .githooks                       # once per clone: lint + types before each commit
 uv run ruff check . && uv run ruff format --check .       # lint + formatting
 uv run mypy                                               # type-check
-uv run pytest                                             # 636 tests; DB tests need `docker compose up -d`
+uv run pytest                                             # 660+ tests; DB tests need `docker compose up -d`
 ```
 
 Tests use a separate `<db>_test` database (created and migrated automatically), scripted fake models and a fake
 embedder — no test calls an LLM API. Configuration: `kartrix/config.yaml`, every key overridable with
 `KARTRIX_<SECTION>__<KEY>`; secrets only in `.env`. Roadmap and log: [docs/ROADMAP.md](docs/ROADMAP.md),
 [docs/PROGRESS.md](docs/PROGRESS.md).
+
+## Limitations and next steps
+
+- Measured on one Windows laptop with free NIM models; the evals are Kartrix's own (26 coding tasks over 4 small
+  apps, 100 retrieval questions over 3 repositories), not an external benchmark.
+- Free-tier model endpoints have rate limits and occasional stalls; retries, a fallback chain and a circuit breaker
+  absorb most of it, but a hung request can still cost up to two request timeouts.
+- On Windows, Node.js can't run inside the AppContainer, so Node commands run unsandboxed after an approval.
+  Two Kartrix processes sandboxing commands at the same instant can race on a shared folder's permissions.
+- Next: OpenTelemetry export, `kartrix serve` (a JSON-RPC core for editor clients) and a VS Code extension, a
+  Docker-free storage option, and an identifier-query retrieval set (to measure hybrid vs dense where it matters).

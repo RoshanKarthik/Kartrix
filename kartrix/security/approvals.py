@@ -116,9 +116,14 @@ def _decline_message(call: ToolCall, reason: str | None) -> ToolMessage:
 
 
 class ApprovalMiddleware(AgentMiddleware):
-    """Pause the agent for the user's approval before running commands that need it."""
+    """Pause the agent for the user's approval before running commands that need it. ``refuse``: command
+    categories this agent's ``run_command`` refuses by itself (the reviewer's) — never asked about."""
 
     state_schema = _ApprovalState
+
+    def __init__(self, refuse: frozenset[str] = frozenset()) -> None:
+        super().__init__()
+        self.refuse = refuse
 
     def _external_request(self, call: ToolCall, others: list[ToolCall]) -> ApprovalRequest | None:
         ext = external_tools.get(call["name"])
@@ -154,7 +159,7 @@ class ApprovalMiddleware(AgentMiddleware):
         except Exception:
             logger.exception("Policy evaluation failed while checking for approval")
             return None
-        if not permissions.needs_approval(decision):
+        if decision.category in self.refuse or not permissions.needs_approval(decision):
             return None
         request = ApprovalRequest(
             tool_call_id=str(call["id"]),

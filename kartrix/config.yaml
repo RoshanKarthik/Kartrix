@@ -190,6 +190,15 @@ retrieval:
   sparse_weight: 0.25            # full-text's weight in the fusion (dense = 1); tuned on the RAG eval
   rank_normalization: 33        # ts_rank_cd: 1 (÷ log length) | 32 (rank / (rank + 1))
   graph_neighbors: 2             # callers/callees of the top hits added via the code graph (0 = off)
+  rerank:                       # second stage: a cross-encoder re-orders the fused candidates
+    enabled: true
+    provider: nvidia
+    model: nvidia/llama-nemotron-rerank-vl-1b-v2
+    candidates: 30              # first-stage chunks it reads
+    max_chars: 2000             # per passage
+    stage1_weight: 0.0          # RRF weight of the first-stage rank next to the reranker's (0 = reranker only)
+    timeout: 10
+    cooldown_s: 120             # after a failure, skip reranking this long (fused order is kept)
 
 tracing:                        # one JSON-lines trace per run; `kartrix trace` shows them
   enabled: true

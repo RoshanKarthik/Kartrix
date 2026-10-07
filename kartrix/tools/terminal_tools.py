@@ -15,6 +15,7 @@ from kartrix.sandbox.manager import sandbox_for
 from kartrix.security.audit import note
 from kartrix.security.budget import command_stop_check
 from kartrix.security.command_policy import Decision, evaluate
+from kartrix.security.command_rules import Category
 from kartrix.security.environment import scrubbed_env
 from kartrix.security.permissions import get_mode, request_approval
 from kartrix.security.workspace import get_workspace
@@ -72,10 +73,40 @@ def run_command(command: str, directory: str = ".") -> str:
         command: The program and its arguments.
         directory: Directory to run in, relative to the workspace root.
     """
+    return _run(command, directory)
+
+
+# A reviewer verifies the change as it is: it runs tests, builds and linters, but never downloads, installs,
+# deletes or writes — those would be new work (and an approval request nobody expects from a check).
+REVIEW_REFUSED = frozenset(
+    {Category.NETWORK, Category.INSTALL, Category.DESTRUCTIVE, Category.GIT_WRITE, Category.WRITE}
+)
+
+
+@tool("run_command", parse_docstring=True)
+def review_command(command: str, directory: str = ".") -> str:
+    """Run one program to verify the change, e.g. "pytest -q" or "node --test". There is no
+    shell: pipes, &&, ;, redirects and $(...) are not supported. Only checks run here: downloads,
+    installs and commands that write or delete are refused.
+
+    Args:
+        command: The program and its arguments.
+        directory: Directory to run in, relative to the workspace root.
+    """
+    return _run(command, directory, refuse=REVIEW_REFUSED)
+
+
+def _run(command: str, directory: str, refuse: frozenset[Category] = frozenset()) -> str:
     decision = evaluate(command, directory)
     note(policy=decision.action, category=str(decision.category), reason=decision.reason, mode=get_mode())
     if decision.action == "deny":
         return f"Error: command denied — {decision.reason}"
+    if decision.category in refuse:
+        note(outcome="refused_for_review")
+        return (
+            f"Error: not run — a review only checks the change ({decision.category} commands are not run here). "
+            "If the change needs this, judge the rest and say in your verdict what was not done."
+        )
     if decision.action == "ask":
         if not request_approval(decision):
             return _not_approved(decision)

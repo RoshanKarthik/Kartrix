@@ -60,6 +60,16 @@ def _no_langsmith(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_reranker() -> Iterator[None]:
+    """No test calls the NIM reranker: the stand-in keeps the first-stage order."""
+    from kartrix.context.rerank import set_reranker
+
+    set_reranker(lambda: lambda query, passages: [-float(i) for i in range(len(passages))])
+    yield
+    set_reranker(None)
+
+
+@pytest.fixture(autouse=True)
 def _model_circuit() -> Iterator[None]:
     """Model failures recorded by the fallback chain's circuit breaker never leak between tests."""
     from kartrix.llm.fallback import reset_circuit

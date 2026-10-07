@@ -8,7 +8,7 @@ timeout: 2100
 task: >-
   Add a "search" command to the notes CLI: "notes search <text>" lists the notes whose text contains
   <text>, ignoring case, in the same format as "notes list". When nothing matches it prints
-  "no notes found" and exits with code 1. Add tests for it and update the README.
+  "no notes found" to standard output and exits with code 1. Add tests for it and update the README.
 check:
   - name: tests
     run: ["{python}", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"]

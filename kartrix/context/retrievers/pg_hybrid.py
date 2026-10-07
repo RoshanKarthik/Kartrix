@@ -6,6 +6,9 @@
   hybrid — both, each taking ``candidates`` results, merged by reciprocal rank fusion:
            score = 1 / (rrf_k + dense rank) + sparse_weight / (rrf_k + sparse rank). Rank-based, so the two score scales never need
            to be compared. Falls back to dense when the query has no searchable words.
+
+Then, with ``retrieval.rerank.enabled``, a cross-encoder re-orders the ``rerank.candidates`` best results
+(``kartrix.context.rerank``; the fused order is kept if it fails).
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from sqlalchemy import bindparam, text
 
 from kartrix.config import settings
 from kartrix.context.indexers.pg_index import repo_key, split_identifiers
+from kartrix.context.rerank import rerank as rerank_chunks
 from kartrix.db.engine import session_scope
 from kartrix.db.models import EMBEDDING_DIMS
 from kartrix.llm.factory import get_embedder
@@ -84,11 +88,15 @@ async def retrieve(
     k: int | None = None,
     repo_root: str | Path | None = None,
     mode: Mode | None = None,
+    rerank: bool | None = None,
 ) -> list[dict]:
-    """Return the top-``k`` chunks of ``repo_root`` (default: cwd) for ``query``."""
+    """Return the top-``k`` chunks of ``repo_root`` (default: cwd) for ``query``; ``rerank`` overrides
+    ``retrieval.rerank.enabled``."""
     cfg = settings.retrieval
     k = k or cfg.top_k
     mode = mode or cfg.mode
+    use_rerank = cfg.rerank.enabled if rerank is None else rerank
+    fetch = max(k, cfg.rerank.candidates) if use_rerank else k
     repo = repo_key(repo_root or Path.cwd())
     tsq = build_tsquery(query)
     if not tsq:  # nothing keyword-searchable in the query
@@ -96,7 +104,7 @@ async def retrieve(
             return []
         mode = "dense"
 
-    params: dict = {"repo": repo, "n": max(cfg.candidates, k), "k": k, "rrf_k": cfg.rrf_k}
+    params: dict = {"repo": repo, "n": max(cfg.candidates, fetch), "k": fetch, "rrf_k": cfg.rrf_k}
     stmt = text(_sql(mode))
     if mode != "sparse":
         params["qvec"] = await get_embedder().aembed_query(query)
@@ -128,5 +136,7 @@ async def retrieve(
         }
         for r in rows
     ]
-    logger.info("Retrieved chunks", extra={"mode": mode, "count": len(chunks)})
+    if use_rerank:
+        chunks = await rerank_chunks(query, chunks, k)
+    logger.info("Retrieved chunks", extra={"mode": mode, "count": len(chunks), "reranked": use_rerank})
     return chunks

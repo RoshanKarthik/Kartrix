@@ -9,8 +9,9 @@ from pathlib import Path
 import pytest
 
 from kartrix.evals.agent import run_check
-from kartrix.evals.datasets import evals_dir, load_calibration, load_golden, load_repos, load_tasks
+from kartrix.evals.datasets import CheckStep, evals_dir, load_calibration, load_golden, load_repos, load_tasks
 from kartrix.evals.fixtures import copy_into, prepare_workspace
+from tests.fakes import FakeSandbox
 
 TASKS = load_tasks()
 
@@ -75,3 +76,24 @@ def test_task_check_fails_before_and_passes_with_solution(task, tmp_path):
     after = [run_check(step, _workspace(task, tmp_path / "after", True)) for step in task.check]
     failed = [c for c in after if not c["ok"]]
     assert not failed, failed[0]["output_tail"] if failed else ""
+
+
+class _NoNodeSandbox(FakeSandbox):
+    """Like the Windows AppContainer: Node can't start inside it."""
+
+    def cannot_run(self, argv: list[str], exe: Path | None) -> str | None:
+        return "node" if Path(argv[0]).stem.lower() == "node" else None
+
+
+def test_a_check_that_starts_node_runs_where_node_can(tmp_path):
+    """The mutation check is Python starting `node --test`: inside a sandbox Node can't run in, every
+    mutant would "fail" with a PermissionError instead of the tests — so it runs like Node itself."""
+    from kartrix.sandbox.manager import set_sandbox
+
+    sandbox = _NoNodeSandbox()
+    set_sandbox(sandbox)
+    wrapped = run_check(CheckStep(run=["{python}", "-c", "pass", "--", "{node}", "--test"]), tmp_path)
+    plain = run_check(CheckStep(run=["{python}", "-c", "pass"]), tmp_path)
+    assert wrapped["ok"] and not wrapped["sandboxed"]
+    assert plain["ok"] and plain["sandboxed"]
+    assert len(sandbox.runs) == 1
