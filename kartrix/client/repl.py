@@ -24,7 +24,8 @@ from kartrix.core.events import EVENT_ADAPTER
 from kartrix.ui.console import ConsoleRenderer
 
 _HELP = (
-    "[dim]/ask <question> · /plan <goal> · /new (new conversation) · /whoami · /exit · Ctrl+C stops a run\n"
+    "[dim]/ask <question> · /plan <goal> · /model [id] · /new (new conversation) · /whoami · /exit · "
+    "Ctrl+C stops a run\n"
     "Other commands (/undo, /mode, /memory, /skills, /mcp …) need the local mode: kartrix --local[/dim]"
 )
 _LOCAL_ONLY = "isn't available through the server yet — run `kartrix --local` for it"
@@ -127,7 +128,33 @@ def _stop_on_ctrl_c(client: KartrixClient, run_id: str, console: Console) -> Any
     return lambda: signal.signal(signal.SIGINT, previous)
 
 
-async def run_remote(creds: Credentials, console: Console | None = None) -> int:
+async def _pick_model(
+    client: KartrixClient, console: Console, target: str, current: str | None, server: str
+) -> str | None:
+    """``/model``: list the server's models; ``/model <id>``: use that one for the next requests."""
+    from kartrix.ui.model_list import render_catalog
+
+    try:
+        catalog = await client.models()
+    except ApiError as e:
+        console.print(f"[red]{escape(e.detail)}[/red]")
+        return current
+    if not target:
+        render_catalog(console, catalog, server, current=current or catalog.get("default"))
+        console.print("[dim]/model <id> switches; the conversation continues with the new model.[/dim]")
+        return current
+    found = next((m for m in catalog["models"] if m["id"] == target), None)
+    if found is None:
+        console.print(f"[red]Unknown model {escape(target)} — /model lists them.[/red]")
+        return current
+    if not found["available"]:
+        console.print(f"[red]{escape(target)}: {escape(found['unavailable_reason'] or 'unavailable')}[/red]")
+        return current
+    console.print(f"[dim]Model: {escape(found['name'])} from the next request.[/dim]")
+    return target
+
+
+async def run_remote(creds: Credentials, console: Console | None = None, model: str | None = None) -> int:
     from kartrix.main import in_daemon_thread
 
     console = console or Console()
@@ -175,6 +202,9 @@ async def run_remote(creds: Credentials, console: Console | None = None) -> int:
             if command == "/whoami":
                 console.print(f"{escape(me['email'])} on {escape(creds.server)}")
                 continue
+            if command == "/model":
+                model = await _pick_model(client, console, rest.strip(), model, creds.server)
+                continue
             if command == "/new":
                 new_session = True
                 console.print("[dim]The next request starts a new conversation.[/dim]")
@@ -190,7 +220,7 @@ async def run_remote(creds: Credentials, console: Console | None = None) -> int:
                 console.print(f"[yellow]Usage: /{kind} <text>[/yellow]")
                 continue
             try:
-                run = await client.start_run(workspace["id"], kind, text, new_session=new_session)
+                run = await client.start_run(workspace["id"], kind, text, new_session=new_session, model=model)
             except ApiError as e:
                 console.print(f"[red]{escape(e.detail)}[/red]")
                 continue

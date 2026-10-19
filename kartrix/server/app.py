@@ -28,7 +28,7 @@ from typing import Annotated, Any, Literal
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from kartrix.config import settings
 from kartrix.db.engine import dispose_engine, session_scope
@@ -85,6 +85,7 @@ class WorkspaceOut(_Out):
 class SessionOut(_Out):
     id: uuid.UUID
     title: str | None
+    model_id: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -94,6 +95,7 @@ class RunIn(BaseModel):
     input: str = Field(min_length=1, max_length=MAX_INPUT)
     session_id: str | None = None  # None: the workspace's latest session (or a new one)
     new_session: bool = False
+    model: str | None = Field(None, max_length=64)  # catalog id; None: the session's model, else the default
 
 
 class RunOut(_Out):
@@ -102,6 +104,7 @@ class RunOut(_Out):
     session_id: uuid.UUID
     kind: str
     input: str
+    model: str | None
     status: str
     detail: str | None
     answer: str | None
@@ -270,6 +273,39 @@ async def _session_for(ws: Workspace, body: RunIn) -> str:
     return str(uuid.uuid4())
 
 
+def _hosted() -> bool:
+    return not settings.server.allow_local_paths
+
+
+async def _model_for(ws: Workspace, session_id: str, body: RunIn) -> str:
+    """The catalog model the run uses: the one asked for, else the session's, else the default. A model that
+    can't run for this user is refused with the reason. Records the session (and a picked model) right away, so
+    the next request continues it even if this run never reaches the agent."""
+    from sqlalchemy.dialects.postgresql import insert
+
+    from kartrix.llm import catalog
+
+    available = {m.id: m for m in catalog.list_models(on_server=_hosted())}
+    picked: str | None = None
+    if body.model is not None:
+        info = available.get(body.model)
+        if info is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"unknown model {body.model!r}")
+        if not info.available:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"{body.model}: {info.unavailable_reason}")
+        picked = info.id
+    row = insert(Session).values(id=uuid.UUID(session_id), repo_path=ws.root_path, model_id=picked)
+    touched: dict[str, Any] = {"updated_at": func.now(), **({"model_id": picked} if picked else {})}
+    upsert = row.on_conflict_do_update(index_elements=[Session.id], set_=touched).returning(Session.model_id)
+    async with session_scope() as s:
+        stored: str | None = (await s.execute(upsert)).scalar_one()
+    if picked is not None:
+        return picked
+    if stored in available and available[stored].available:
+        return str(stored)
+    return catalog.default_entry().id  # never picked, or no longer offered
+
+
 def _sse(item: FeedItem) -> bytes:
     head = f"id: {item.seq}\n" if item.seq is not None else ""
     data = json.dumps(item.data, ensure_ascii=False, default=str)
@@ -295,7 +331,7 @@ def _routes() -> Any:
 
         from kartrix.llm import catalog
 
-        listed = catalog.list_models(on_server=not settings.server.allow_local_paths)
+        listed = catalog.list_models(on_server=_hosted())
         tier_list = [TierOut(id=key, **tier.model_dump()) for key, tier in catalog.tiers().items()]
         return CatalogOut(
             default=catalog.default_entry().id, tiers=tier_list, models=[ModelOut(**asdict(m)) for m in listed]
@@ -388,14 +424,15 @@ def _routes() -> Any:
         worker = pool.workers.get(ws.id)
         if worker is not None and worker.busy:
             raise HTTPException(status.HTTP_409_CONFLICT, "a run is already in progress in this workspace")
+        model = await _model_for(ws, session_id, body)
         run_id = uuid.uuid4()
         async with session_scope() as s:
             run = Run(
                 id=run_id, user_id=user.id, workspace_id=ws.id, session_id=uuid.UUID(session_id),
-                kind=body.kind, input=body.input, status="running",
+                kind=body.kind, input=body.input, model=model, status="running",
             )  # fmt: skip
             s.add(run)
-        op = RunOp(run_id=str(run_id), kind=body.kind, input=body.input, session_id=session_id)
+        op = RunOp(run_id=str(run_id), kind=body.kind, input=body.input, session_id=session_id, model=model)
         try:
             await pool.start_run(user_id=user.id, workspace_id=ws.id, root=Path(ws.root_path), run_id=run_id, op=op)
         except PoolError as e:

@@ -275,7 +275,7 @@ async def test_sessions_continue_and_stay_in_their_workspace(
     ).json()
     assert fresh["session_id"] != mine
     sessions = (await http.get(f"/workspaces/{ws['id']}/sessions", headers=ada)).json()
-    assert [s["id"] for s in sessions] == [mine]
+    assert [s["id"] for s in sessions] == [fresh["session_id"], mine]  # recorded when its run starts
 
 
 async def test_user_memories_are_per_user(fake_embedder: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -310,3 +310,46 @@ async def test_model_catalog(server: tuple[FakePool, httpx.AsyncClient], monkeyp
     monkeypatch.setattr(settings.server, "allow_local_paths", False)  # hosted
     data = (await http.get("/models", headers=ada)).json()
     assert not any(m["available"] for m in data["models"] if m["tier"] == "own_key")
+
+
+async def test_model_per_run_and_session(
+    server: tuple[FakePool, httpx.AsyncClient], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kartrix.llm import catalog
+
+    pool, http = server
+    ada = await _signup(http, "ada@example.com")
+    ws = await _workspace(http, ada, tmp_path / "repo")
+    runs = f"/workspaces/{ws['id']}/runs"
+    default = catalog.default_entry().id
+    other = next(m.id for m in catalog.list_models() if m.available and not m.default)
+
+    first = (await http.post(runs, json={"input": "x"}, headers=ada)).json()
+    assert first["model"] == default and pool.ops[-1].model == default
+    pool.finish_run(first["id"], status="completed")
+    await pool.flush()
+
+    r = await http.post(runs, json={"input": "x", "model": "no-such-model"}, headers=ada)
+    assert r.status_code == 422 and "unknown model" in r.json()["detail"]
+    picked = (await http.post(runs, json={"input": "x", "model": other}, headers=ada)).json()
+    assert picked["model"] == other and pool.ops[-1].model == other
+    assert picked["session_id"] == first["session_id"]
+    pool.finish_run(picked["id"], status="completed")
+    await pool.flush()
+
+    again = (await http.post(runs, json={"input": "x"}, headers=ada)).json()
+    assert again["model"] == other  # the session remembers the pick
+    pool.finish_run(again["id"], status="completed")
+    await pool.flush()
+    sessions = (await http.get(f"/workspaces/{ws['id']}/sessions", headers=ada)).json()
+    assert sessions[0]["model_id"] == other
+
+    fresh = (await http.post(runs, json={"input": "x", "new_session": True}, headers=ada)).json()
+    assert fresh["model"] == default  # a new conversation starts on the default
+    pool.finish_run(fresh["id"], status="completed")
+    await pool.flush()
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "operator-key")
+    monkeypatch.setattr(settings.server, "allow_local_paths", False)  # hosted: the operator's key isn't yours
+    r = await http.post(runs, json={"input": "x", "model": "claude-opus-5-5"}, headers=ada)
+    assert r.status_code == 422 and "own key" in r.json()["detail"]

@@ -51,6 +51,7 @@ class RunSpec(BaseModel):
     plan_only: bool = False
     semantic_cache: bool = False  # off by default: a cached answer would skip the agent being measured
     mcp: list[str] = Field(default_factory=list)  # MCP servers to connect for this run
+    model: str | None = None  # catalog id of the main model (`kartrix models`); None: the default
     report: str | None = None
     events: str | None = None
 

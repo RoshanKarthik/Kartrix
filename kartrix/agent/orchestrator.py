@@ -5,6 +5,7 @@ from typing import Any
 
 from kartrix.agent.reliability import final_text
 from kartrix.config import settings
+from kartrix.llm.factory import main_model
 from kartrix.observability.logger import get_logger
 from kartrix.security.approvals import Approver, run_agent
 from kartrix.security.budget import current as current_budget
@@ -35,7 +36,7 @@ async def handle_query(
     Commands that need approval pause the agent until ``approver`` answers.
     """
     logger.info(f"Handling query for session {thread_id}: {question}")
-    model = settings.llm.model
+    model = main_model().model  # cached answers are per model
 
     if semantic_cache is not None and cache_domain is not None:
         try:

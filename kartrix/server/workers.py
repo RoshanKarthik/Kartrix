@@ -111,13 +111,15 @@ class WorkerProcess:
     def busy(self) -> bool:
         return self.feed is not None and not self.feed.finished
 
-    def start(self, session_id: str) -> None:
+    def start(self, session_id: str, model: str | None = None) -> None:
         loop = asyncio.get_running_loop()
         logs = self.pool.data_dir / "logs"
         logs.mkdir(parents=True, exist_ok=True)
         self._log = open(logs / f"worker-{self.workspace_id}.log", "ab")
         env = {**os.environ, "KARTRIX_USER_ID": str(self.user_id), "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
         argv = [sys.executable, "-m", "kartrix.cli", "worker", "--session", session_id]
+        if model is not None:
+            argv += ["--model", model]  # built with it, rather than switched before the first run
         if settings.server.allow_local_paths:
             argv.append("--mcp")  # the user's own machine: their connected MCP servers too
         group: dict[str, Any] = (
@@ -271,7 +273,7 @@ class WorkerPool:
                 raise PoolError(503, "the server is at its limit of active workspaces — try again shortly")
             worker = WorkerProcess(self, workspace_id, user_id, root)
             self.workers[workspace_id] = worker
-            worker.start(op.session_id)
+            worker.start(op.session_id, op.model)
         feed = RunFeed(run_id, workspace_id)
         self.feeds[run_id] = feed
         worker.feed = feed

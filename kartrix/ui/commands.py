@@ -311,6 +311,7 @@ def print_help() -> None:
     console.print("  [bold]/plan <goal>[/bold]             — generate and execute a plan")
     console.print("  [bold]/task_status[/bold]             — show task progress for active project")
     console.print("  [bold]/mode \\[read_only|default|auto][/bold] — show or change the permission mode")
+    console.print("  [bold]/model \\[id][/bold]              — list the models, or switch to one")
     console.print("  [bold]/audit \\[n][/bold]                — show this session's last n tool calls")
     console.print("  [bold]/mcp[/bold]                     — list MCP servers")
     console.print("  [bold]/connect <server>[/bold]        — connect an MCP server (e.g. github)")
@@ -384,6 +385,18 @@ async def dispatch(core: CoreSession, user_input: str) -> None:
                     details={"previous": previous},
                 )
         console.print(f"[dim]Permission mode: {get_mode()} (available: {', '.join(MODES)})[/dim]")
+    elif user_input == "/model" or user_input.startswith("/model "):
+        target = user_input.removeprefix("/model").strip()
+        if not target:
+            from kartrix.ui.model_list import local_catalog, render_catalog
+
+            render_catalog(console, local_catalog(), "this install", current=core.model_id)
+            console.print("[dim]/model <id> switches; the conversation continues with the new model.[/dim]")
+            return
+        try:
+            core.set_model(target)
+        except ValueError as e:
+            console.print(f"[red]{escape(str(e))}[/red]")
     elif user_input.split()[0] in ("/mcp", "/connect", "/disconnect"):
         command, _, arg = user_input.partition(" ")
         if core.mcp is not None and await handle_mcp_command(command, arg.strip(), core.mcp, core.session_id):

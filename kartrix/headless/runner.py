@@ -124,6 +124,7 @@ async def _run(spec: RunSpec) -> Any:
         semantic_cache=spec.semantic_cache,
         resume_pending=False,
         index="wait",  # runs are measured: search sees the whole index from the first call
+        model=spec.model,
     )
     core = await CoreSession.start(PolicyApprover(spec.approvals), approve_plan_as_is, options)
     try:

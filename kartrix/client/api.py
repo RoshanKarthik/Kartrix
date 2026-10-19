@@ -141,9 +141,16 @@ class KartrixClient:
 
     # runs
     async def start_run(
-        self, workspace_id: str, kind: str, text: str, *, session_id: str | None = None, new_session: bool = False
+        self,
+        workspace_id: str,
+        kind: str,
+        text: str,
+        *,
+        session_id: str | None = None,
+        new_session: bool = False,
+        model: str | None = None,
     ) -> dict[str, Any]:
-        body = {"kind": kind, "input": text, "session_id": session_id, "new_session": new_session}
+        body = {"kind": kind, "input": text, "session_id": session_id, "new_session": new_session, "model": model}
         result: dict[str, Any] = await self._call("POST", f"/workspaces/{workspace_id}/runs", body)
         return result
 

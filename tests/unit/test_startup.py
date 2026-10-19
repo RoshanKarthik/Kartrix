@@ -64,7 +64,7 @@ async def test_repl_answers_help_and_exit_before_the_core_is_up(monkeypatch: pyt
     started = asyncio.Event()
     cancelled = asyncio.Event()
 
-    async def never_ready() -> Any:
+    async def never_ready(model: str | None = None) -> Any:
         started.set()
         try:
             await asyncio.sleep(3600)
@@ -86,7 +86,7 @@ async def test_repl_answers_help_and_exit_before_the_core_is_up(monkeypatch: pyt
 async def test_repl_reports_a_failed_start(monkeypatch: pytest.MonkeyPatch) -> None:
     import kartrix.main as repl
 
-    async def broken() -> Any:
+    async def broken(model: str | None = None) -> Any:
         raise RuntimeError("NVIDIA_API_KEY is not set")
 
     monkeypatch.setattr(repl, "_start_core", broken)

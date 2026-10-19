@@ -47,7 +47,7 @@ from kartrix.agent.streaming import AnswerStream
 from kartrix.agent.tools import remember, search_codebase, symbol_graph
 from kartrix.config import settings
 from kartrix.core.events import AgentStep, Event, ToolCallFinished, ToolCallStarted, collecting, emit
-from kartrix.llm.factory import get_chat_model, get_model_middleware
+from kartrix.llm.factory import get_chat_model, get_model_middleware, main_response_format
 from kartrix.memory import long_term
 from kartrix.observability.logger import get_logger
 from kartrix.security.budget import BudgetMiddleware
@@ -247,7 +247,7 @@ class AgentGraph:
         )
         self.reviewer = create_agent(
             llm, tools=reviewer_tools, system_prompt=REVIEWER_PROMPT, middleware=middleware(approval(refuse=REVIEW_REFUSED)),
-            response_format=ReviewVerdict,
+            response_format=main_response_format(ReviewVerdict),
         )  # fmt: skip
         self.router = create_agent(
             get_chat_model("router", temperature=0), tools=[], system_prompt=ROUTER_PROMPT,

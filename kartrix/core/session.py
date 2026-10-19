@@ -27,7 +27,7 @@ from kartrix.context.indexers.watcher import start_watcher, stop_watcher
 from kartrix.core.events import AssistantMessage, RunFinished, RunStarted, RunStatus, Usage, emit, notice, run_scope
 from kartrix.core.interaction import PlanReviewer
 from kartrix.db.engine import dispose_engine
-from kartrix.llm.factory import get_embedder, get_llm
+from kartrix.llm.factory import get_embedder, get_llm, main_model, select_main_model
 from kartrix.mcp.mcp_client import McpManager
 from kartrix.memory.session import get_current_session, record_session
 from kartrix.memory.short_term import get_checkpointer
@@ -58,6 +58,25 @@ class _Clock:
             yield
         finally:
             self.into[name] = round(time.perf_counter() - start, 3)
+
+
+def _select_model(model_id: str | None) -> str:
+    """Select catalog model ``model_id`` (None: the default) for the main role; returns its id."""
+    from kartrix.config import LLMModelRef
+    from kartrix.llm import catalog
+
+    if model_id is None:
+        select_main_model(None)
+        return catalog.default_entry().id
+    entry = catalog.find(model_id)
+    if entry is None:
+        known = ", ".join(m.id for m in catalog.entries())
+        raise ValueError(f"unknown model {model_id!r} — models: {known}")
+    info = next(m for m in catalog.list_models() if m.id == model_id)
+    if not info.available:
+        raise ValueError(f"model {model_id!r} can't run here: {info.unavailable_reason}")
+    select_main_model(None if info.default else LLMModelRef(provider=entry.provider, model=entry.model))
+    return entry.id
 
 
 def usage_of(budget: Budget) -> Usage:
@@ -96,6 +115,7 @@ class StartOptions:
     # background: start answering at once, the index catches up (search says so meanwhile);
     # wait: the index is up to date before start() returns (headless runs, the evals)
     index: Literal["background", "wait"] = "background"
+    model: str | None = None  # catalog id of the main model (None: the configured default)
 
 
 class CoreSession:
@@ -115,6 +135,7 @@ class CoreSession:
         self._index_task: asyncio.Task[None] | None = None
         self._watch = False
         self._stop_tracing: Any = None
+        self.model_id = ""  # catalog id of the main model in use
 
     @classmethod
     async def start(
@@ -127,9 +148,10 @@ class CoreSession:
         clock = _Clock(self.startup_timings)
         # Built once up front so a missing API key or bad provider config fails at startup.
         with clock("llm"):
+            self.model_id = _select_model(opts.model)
             get_llm()
             get_embedder()
-        notice(f"LLM: {settings.llm.provider} / {settings.llm.model}")
+        notice(f"LLM: {main_model().provider} / {main_model().model}")
         notice(f"Embedder: {settings.embeddings.provider} / {settings.embeddings.model}")
 
         workspace = set_workspace(self.repo_path)  # file tools may only touch this tree
@@ -191,6 +213,16 @@ class CoreSession:
     def rebuild_agent(self) -> None:
         """After the tool set changed (MCP servers, trusted skills)."""
         self.agent = build_agent(self.checkpointer, self.mcp.tools if self.mcp else [])
+
+    def set_model(self, model_id: str) -> None:
+        """Use catalog model ``model_id`` for the main role from the next request (``/model``).
+        ValueError if it isn't in the catalog or can't run here."""
+        if model_id == self.model_id:
+            return
+        self.model_id = _select_model(model_id)
+        get_llm()  # a client that can't be built fails here, not mid-run
+        self.rebuild_agent()
+        notice(f"Model: {main_model().provider} / {main_model().model}")
 
     async def reindex(self) -> None:
         """Bring the index up to date now (``/reindex``)."""

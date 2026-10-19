@@ -40,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--local", action="store_true", help="run the agent in this process even when logged in to a server"
     )
+    parser.add_argument("--model", help="catalog id of the model to use (see `kartrix models`; /model switches)")
     commands = parser.add_subparsers(dest="command", metavar="command")
     serve = commands.add_parser(
         "serve",
@@ -64,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     worker = commands.add_parser("worker")  # started by the server, not listed in --help
     worker.add_argument("--session", required=True)
     worker.add_argument("--mcp", action="store_true")
+    worker.add_argument("--model")
     commands.add_parser(
         "stop",
         help="stop every Kartrix run in progress on this machine (kill switch)",
@@ -109,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "worker":
         from kartrix.server.worker import run_worker
 
-        return run_worker(args.session, args.mcp)
+        return run_worker(args.session, args.mcp, args.model)
     if args.command == "models":
         return asyncio.run(_models(args.local))
     if args.command in ("login", "logout", "whoami"):
@@ -148,13 +150,13 @@ def main(argv: list[str] | None = None) -> int:
             from kartrix.client.repl import run_remote
 
             try:
-                return asyncio.run(run_remote(creds))
+                return asyncio.run(run_remote(creds, model=args.model))
             except KeyboardInterrupt:
                 return 130
 
     from kartrix.main import run
 
-    run()
+    run(args.model)
     return 0
 
 

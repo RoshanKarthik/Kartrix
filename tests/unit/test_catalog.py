@@ -93,3 +93,71 @@ def test_models_table(monkeypatch: pytest.MonkeyPatch) -> None:
     text = console.export_text()
     assert "main" in text and "(default)" in text and "available" in text
     assert "needs ANTHROPIC_API_KEY" in text
+
+
+# ── picking the main model (roadmap 2.2) ──────────────────────────────
+
+
+@pytest.fixture
+def reset_selection() -> Any:
+    from kartrix.llm.factory import select_main_model
+
+    yield
+    select_main_model(None)
+
+
+@pytest.mark.usefixtures("reset_selection")
+def test_selected_main_model_is_used_for_the_main_role_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kartrix.config import LLMModelRef
+    from kartrix.llm import factory
+
+    built: list[tuple[str, str]] = []
+    monkeypatch.setattr(factory, "_build_chat_model", lambda provider, model, **kw: built.append((provider, model)))
+    factory.select_main_model(LLMModelRef(provider="anthropic", model="claude-x"))
+    factory.get_chat_model("main")
+    factory.get_chat_model("router")
+    factory.get_chat_model("judge")
+    assert built[0] == ("anthropic", "claude-x")
+    assert built[1] == (settings.llm.provider, settings.llm.effective_router_model)
+    assert built[2] == (settings.llm.provider, settings.llm.effective_judge_model)
+    factory.select_main_model(None)
+    assert factory.main_model().model == settings.llm.model
+
+
+@pytest.mark.usefixtures("reset_selection")
+def test_claude_gets_no_sampling_parameters_and_native_structured_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    from langchain.agents.structured_output import ProviderStrategy
+
+    from kartrix.config import LLMModelRef
+    from kartrix.llm import factory
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "placeholder-not-a-real-key")
+    llm = factory._build_chat_model("anthropic", "claude-opus-5-5", temperature=0, top_p=0.5)
+    assert getattr(llm, "temperature", None) is None and getattr(llm, "top_p", None) is None
+    assert factory.main_response_format(LLMModelRef) is LLMModelRef  # the default (NIM) model: LangChain decides
+    factory.select_main_model(LLMModelRef(provider="anthropic", model="claude-haiku-5-5"))
+    assert isinstance(factory.main_response_format(LLMModelRef), ProviderStrategy)
+
+
+@pytest.mark.usefixtures("configured", "reset_selection")
+def test_select_model_checks_the_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kartrix.core.session import _select_model
+    from kartrix.llm.factory import main_model
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="unknown model 'nope'"):
+        _select_model("nope")
+    with pytest.raises(ValueError, match="needs ANTHROPIC_API_KEY"):
+        _select_model("claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "placeholder-not-a-real-key")
+    assert _select_model("claude") == "claude"
+    assert main_model().model == "claude-x"
+    assert _select_model(None) == "main" and main_model().model == "vendor/main"
+
+
+def test_headless_spec_takes_a_model(tmp_path: Any) -> None:
+    from kartrix.headless.spec import load_spec
+
+    path = tmp_path / "spec.yaml"
+    path.write_text("task: fix it\nmodel: gemma-4-31b\n", encoding="utf-8")
+    assert load_spec(path).model == "gemma-4-31b"

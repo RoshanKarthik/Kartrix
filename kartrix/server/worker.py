@@ -114,13 +114,13 @@ def _read_protocol(source: BinaryIO, loop: asyncio.AbstractEventLoop, queue: asy
     loop.call_soon_threadsafe(queue.put_nowait, None)  # the server closed our stdin: shut down
 
 
-async def _serve(channel: Channel, source: BinaryIO, session_id: str, mcp: bool) -> int:
+async def _serve(channel: Channel, source: BinaryIO, session_id: str, mcp: bool, model: str | None = None) -> int:
     from kartrix.core.events import bus
     from kartrix.core.session import CoreSession, StartOptions
 
     unsubscribe = bus.subscribe(lambda event: channel.send({"kind": "event", "event": event.model_dump(mode="json")}))
     front = RemoteFrontEnd(channel)
-    options = StartOptions(session_id=session_id, mcp=mcp, resume_pending=False)
+    options = StartOptions(session_id=session_id, mcp=mcp, resume_pending=False, model=model)
     try:
         core = await CoreSession.start(front.approve, front.review_plan, options)
     except Exception as e:
@@ -139,6 +139,8 @@ async def _serve(channel: Channel, source: BinaryIO, session_id: str, mcp: bool)
         try:
             if op.session_id != core.session_id:
                 await core.use_session(op.session_id)
+            if op.model is not None:
+                core.set_model(op.model)  # rebuilds the agent only when it changes
             if op.kind == "ask":
                 outcome = await core.ask(op.input)
             else:
@@ -189,10 +191,10 @@ async def _serve(channel: Channel, source: BinaryIO, session_id: str, mcp: bool)
     return 0
 
 
-def run_worker(session_id: str, mcp: bool = False) -> int:
+def run_worker(session_id: str, mcp: bool = False, model: str | None = None) -> int:
     """Entry point of ``kartrix worker`` (started by the server, never by hand)."""
     protocol_in, protocol_out = private_protocol_pipes()
-    return asyncio.run(_serve(Channel(protocol_out), protocol_in, session_id, mcp))
+    return asyncio.run(_serve(Channel(protocol_out), protocol_in, session_id, mcp, model))
 
 
 def private_protocol_pipes() -> tuple[BinaryIO, TextIO]:

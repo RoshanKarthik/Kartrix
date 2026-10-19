@@ -113,6 +113,7 @@ class Session(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     repo_path: Mapped[str] = mapped_column(Text, nullable=False)
     title: Mapped[str | None] = mapped_column(String(200))
+    model_id: Mapped[str | None] = mapped_column(String(64))  # catalog model picked for it (None: default)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 
@@ -441,6 +442,7 @@ class Run(Base):
     session_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
     kind: Mapped[str] = mapped_column(String(8), nullable=False)
     input: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str | None] = mapped_column(String(64))  # catalog id of the main model
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'running'"))
     detail: Mapped[str | None] = mapped_column(Text)
     answer: Mapped[str | None] = mapped_column(Text)

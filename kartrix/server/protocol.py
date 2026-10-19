@@ -33,6 +33,7 @@ class RunOp(BaseModel):
     kind: Literal["ask", "plan"]
     input: str
     session_id: str
+    model: str | None = None  # catalog id of the main model (None: the default)
 
 
 class ApprovalOp(BaseModel):

@@ -29,7 +29,7 @@ def _price(model: dict[str, Any]) -> str:
     return f"${model['price_input']:g} / ${model['price_output']:g}"
 
 
-def render_catalog(console: Console, data: dict[str, Any], source: str) -> None:
+def render_catalog(console: Console, data: dict[str, Any], source: str, current: str | None = None) -> None:
     tiers = {t["id"]: t for t in data.get("tiers", [])}
     table = Table(title=f"Models ({escape(source)})", title_justify="left", header_style="bold")
     table.add_column("ID", no_wrap=True)
@@ -42,5 +42,7 @@ def render_catalog(console: Console, data: dict[str, Any], source: str) -> None:
         reason = model["unavailable_reason"] or "unavailable"
         status = "[green]available[/green]" if model["available"] else f"[dim]{escape(reason)}[/dim]"
         name = escape(model["name"]) + (" [bold](default)[/bold]" if model["default"] else "")
+        if model["id"] == current:
+            name = "[bold green]▶[/bold green] " + name
         table.add_row(escape(model["id"]), name, escape(tier["name"]), _price(model), status)
     console.print(table)

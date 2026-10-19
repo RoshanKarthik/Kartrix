@@ -65,15 +65,15 @@ def _import_core() -> None:
         importlib.import_module(name)
 
 
-async def _start_core() -> Any:
+async def _start_core(model: str | None = None) -> Any:
     started = time.perf_counter()
     await in_daemon_thread(_import_core)
     imported = time.perf_counter()
-    from kartrix.core.session import CoreSession
+    from kartrix.core.session import CoreSession, StartOptions
     from kartrix.ui.approval_prompt import ConsoleApprover
     from kartrix.ui.plan_review import make_reviewer
 
-    core = await CoreSession.start(ConsoleApprover(console), make_reviewer(console))
+    core = await CoreSession.start(ConsoleApprover(console), make_reviewer(console), StartOptions(model=model))
     logger.info(
         "Core ready",
         extra={"imports_s": round(imported - started, 2), "start_s": round(time.perf_counter() - imported, 2)},
@@ -92,12 +92,12 @@ async def _wait_for(starter: asyncio.Task[Any]) -> Any:
     return await starter
 
 
-async def _run_async() -> None:
+async def _run_async(model: str | None = None) -> None:
     t0 = time.perf_counter()
     logger.info("Starting Kartrix")
     renderer = ConsoleRenderer(console)
     unsubscribe = bus.subscribe(renderer)
-    starter = asyncio.create_task(_start_core(), name="kartrix-start")
+    starter = asyncio.create_task(_start_core(model), name="kartrix-start")
     console.print("\n[bold blue]Kartrix[/bold blue] — security-first coding agent")
     console.print(_HELP + "\n")
     logger.info("Prompt ready", extra={"seconds": round(time.perf_counter() - t0, 3)})
@@ -146,8 +146,8 @@ async def _run_async() -> None:
         unsubscribe()
 
 
-def run() -> None:
-    asyncio.run(_run_async())
+def run(model: str | None = None) -> None:
+    asyncio.run(_run_async(model))
 
 
 if __name__ == "__main__":

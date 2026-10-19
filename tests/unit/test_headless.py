@@ -35,7 +35,7 @@ def test_load_spec_defaults(tmp_path: Path) -> None:
         ("mode: ask\n", "task"),
         ("task: ''\n", "must not be empty"),
         ("task: x\ntask: y\n", "uplicate"),
-        ("task: x\nmodel: gpt\n", "Extra inputs"),
+        ("task: x\nmodle: gpt\n", "Extra inputs"),
         ("task: x\napprovals: {allow: [a], otherwise: approve}\n", "otherwise"),
         ("task: x\nmode: build\n", "mode"),
         ("- task\n", "mapping"),

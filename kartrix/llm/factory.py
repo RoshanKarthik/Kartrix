@@ -19,7 +19,7 @@ from langchain.agents.middleware import AgentMiddleware, ModelFallbackMiddleware
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 
-from kartrix.config import settings
+from kartrix.config import LLMModelRef, settings
 from kartrix.llm.catalog import PROVIDER_KEYS as _PROVIDER_KEYS
 from kartrix.llm.fallback import acall_chain, call_chain
 from kartrix.llm.model_retry import RateAwareRetryMiddleware
@@ -46,6 +46,28 @@ def _require_env(name: str) -> str:
     if not value:
         raise ProviderConfigError(f"{name} is not set — add it to .env (see .env.example)")
     return value
+
+
+# The model the user picked for the main role (``select_main_model``); None = ``llm.provider`` / ``llm.model``.
+# Router and judge stay the configured cheap models whatever is picked.
+_selected_main: LLMModelRef | None = None
+
+
+def select_main_model(ref: LLMModelRef | None) -> None:
+    """Use ``ref`` for the main role from now on in this process (None: back to the configured default).
+    Agents already built keep their model: rebuild them (``CoreSession.set_model`` does)."""
+    global _selected_main
+    _selected_main = ref
+    logger.info("Main model selected", extra={"model": ref.model if ref else settings.llm.model})
+
+
+def main_model() -> LLMModelRef:
+    return _selected_main or LLMModelRef(provider=settings.llm.provider, model=settings.llm.model)
+
+
+# Current Claude models reject sampling parameters (400); callers ask for temperature=0 for determinism,
+# which those models don't offer anyway.
+_ANTHROPIC_UNSUPPORTED = ("temperature", "top_p", "top_k")
 
 
 def _build_chat_model(provider: str, model: str, **kwargs: Any) -> BaseChatModel:
@@ -76,6 +98,8 @@ def _build_chat_model(provider: str, model: str, **kwargs: Any) -> BaseChatModel
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
+        for name in _ANTHROPIC_UNSUPPORTED:
+            kwargs.pop(name, None)
         return ChatAnthropic(model=model, timeout=timeout, max_retries=0, **kwargs)
     raise ValueError(f"Unknown LLM provider: {provider}")
 
@@ -83,9 +107,24 @@ def _build_chat_model(provider: str, model: str, **kwargs: Any) -> BaseChatModel
 def get_chat_model(role: Role = "main", **kwargs: Any) -> BaseChatModel:
     """The primary model for a role. ``kwargs`` (temperature, max_tokens, ...) are passed through."""
     cfg = settings.llm
-    model = {"judge": cfg.effective_judge_model, "router": cfg.effective_router_model}.get(role, cfg.model)
-    logger.info("Using LLM", extra={"role": role, "provider": cfg.provider, "model": model})
-    return _build_chat_model(cfg.provider, model, **kwargs)
+    if role == "main":
+        provider, model = main_model().provider, main_model().model
+    else:
+        provider = cfg.provider
+        model = cfg.effective_judge_model if role == "judge" else cfg.effective_router_model
+    logger.info("Using LLM", extra={"role": role, "provider": provider, "model": model})
+    return _build_chat_model(provider, model, **kwargs)
+
+
+def main_response_format(schema: Any) -> Any:
+    """``response_format`` for an agent on the main model. Claude models get native structured output:
+    LangChain falls back to a forced tool call for models it doesn't know (e.g. Claude Haiku 5.5), and current
+    Claude models reject forced tool use (or combine it badly with their always-on thinking)."""
+    if main_model().provider == "anthropic":
+        from langchain.agents.structured_output import ProviderStrategy
+
+        return ProviderStrategy(schema)
+    return schema
 
 
 def get_fallback_chat_models(**kwargs: Any) -> list[BaseChatModel]:
