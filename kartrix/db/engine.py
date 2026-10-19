@@ -28,7 +28,12 @@ class DatabaseConfigError(RuntimeError):
 def get_database_url() -> str:
     url = os.environ.get("DATABASE_URL", "").strip()
     if not url:
-        raise DatabaseConfigError("DATABASE_URL is not set — add it to .env (see .env.example)")
+        from kartrix.db.embedded import EmbeddedDatabaseError, ensure
+
+        try:
+            url = ensure()  # no database configured: Kartrix's own (kartrix/db/embedded.py)
+        except EmbeddedDatabaseError as e:
+            raise DatabaseConfigError(str(e)) from e
     return normalize_database_url(url)
 
 

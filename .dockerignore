@@ -1,11 +1,10 @@
-# Only what the image needs: pyproject.toml, uv.lock, README.md, kartrix/, migrations/, alembic.ini, deploy/
+# Only what the image needs: pyproject.toml, uv.lock, README.md, kartrix/ (migrations included), alembic.ini, deploy/
 *
 !pyproject.toml
 !uv.lock
 !README.md
 !alembic.ini
 !kartrix/
-!migrations/
 !deploy/start.sh
 **/__pycache__
 **/*.pyc

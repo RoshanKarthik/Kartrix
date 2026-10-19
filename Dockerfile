@@ -21,7 +21,6 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-default-groups --no-install-project
 COPY kartrix ./kartrix
-COPY migrations ./migrations
 COPY alembic.ini ./
 COPY deploy/start.sh ./start.sh
 RUN uv sync --frozen --no-default-groups && chmod +x start.sh

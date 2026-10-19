@@ -60,6 +60,27 @@ class _Clock:
             self.into[name] = round(time.perf_counter() - start, 3)
 
 
+async def _start_database() -> None:
+    """With no DATABASE_URL, start Kartrix's built-in database now (off the event loop) and say so — the first
+    start creates it and takes a while."""
+    import os
+
+    from kartrix.db import embedded
+
+    if os.environ.get("DATABASE_URL", "").strip():
+        if embedded.is_running_here():
+            notice(f"Database: built-in ({embedded.root()})")
+        return
+    first = not (embedded.root() / "password").exists()
+    notice(
+        "Setting up Kartrix's built-in database (first time only, about 20 s)…"
+        if first
+        else "Starting the built-in database…"
+    )
+    await asyncio.to_thread(embedded.ensure)
+    notice(f"Database: built-in ({embedded.root()})")
+
+
 def _select_model(model_id: str | None) -> str:
     """Select catalog model ``model_id`` (None: the default) for the main role; returns its id."""
     from kartrix.config import LLMModelRef
@@ -153,6 +174,8 @@ class CoreSession:
             get_embedder()
         notice(f"LLM: {main_model().provider} / {main_model().model}")
         notice(f"Embedder: {settings.embeddings.provider} / {settings.embeddings.model}")
+        with clock("database"):
+            await _start_database()
 
         workspace = set_workspace(self.repo_path)  # file tools may only touch this tree
         notice(f"Workspace: {workspace.root} · permission mode: {get_mode()}")
