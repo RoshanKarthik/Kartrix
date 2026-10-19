@@ -103,15 +103,12 @@ async def _run_suites(args: argparse.Namespace, suites: list[str]) -> dict[str, 
 def run_eval(args: argparse.Namespace) -> int:
     import warnings
 
+    from kartrix.cli import safe_stdio
     from kartrix.evals import store
     from kartrix.evals.compare import compare
     from kartrix.evals.datasets import DatasetError
 
-    # Progress uses ✓ / ✗ / …: UTF-8 when redirected to a file, never a crash on a legacy console.
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            reconfigure(**({"errors": "replace"} if stream.isatty() else {"encoding": "utf-8", "errors": "replace"}))
+    safe_stdio()  # progress uses ✓ / ✗ / …
     # tree-sitter-languages 1.10 calls an API tree-sitter 0.21 deprecates (pinned until the parser work).
     warnings.filterwarnings("ignore", message=r"Language\(path, name\) is deprecated", category=FutureWarning)
     from kartrix.evals.report import render_html, text_summary

@@ -17,9 +17,9 @@ from langgraph.graph.message import add_messages
 from kartrix.agent import context as agent_context
 from kartrix.agent.tools import remember as remember_tool
 from kartrix.config import settings
+from kartrix.core import commands
 from kartrix.memory import long_term
 from kartrix.security import workspace as ws_mod
-from kartrix.ui import commands
 
 pytestmark = pytest.mark.usefixtures("db", "fake_embedder")
 
@@ -98,14 +98,31 @@ async def test_remember_tool_stores_an_agent_memory(ws: Path) -> None:
     assert (row.scope, row.source) == ("user", "agent")
 
 
+class _Host:
+    session_id = "00000000-0000-4000-8000-000000000001"
+    mcp = None
+
+    def rebuild_agent(self) -> None:
+        pass
+
+
+async def _memory(line: str) -> dict[str, Any]:
+    return await commands.run(_Host(), *commands.parse(line))
+
+
 async def test_memory_command_add_list_forget(ws: Path) -> None:
-    await commands.handle_memory_command("add --user answer briefly", "s1")
-    await commands.handle_memory_command("add migrations live in migrations/versions", "s1")
+    added = await _memory("/memory add --user answer briefly")
+    assert (added["kind"], added["scope"]) == ("preference", "user")
+    await _memory("/memory add migrations live in migrations/versions")
     rows = await long_term.list_memories()
     assert sorted((m.kind, m.scope) for m in rows) == [("fact", "project"), ("preference", "user")]
-    await commands.handle_memory_command("", "s1")
-    await commands.handle_memory_command(f"forget {str(rows[0].id)[:8]}", "s1")
+    listed = await _memory("/memory")
+    assert {m["content"] for m in listed["memories"]} == {"answer briefly", "migrations live in migrations/versions"}
+    forgotten = await _memory(f"/memory forget {str(rows[0].id)[:8]}")
+    assert forgotten["id"] == str(rows[0].id)
     assert len(await long_term.list_memories()) == 1
+    with pytest.raises(commands.CommandError, match="No memory"):
+        await _memory("/memory forget ffffffff")
 
 
 async def test_compress_summarises_old_turns(ws: Path, monkeypatch: pytest.MonkeyPatch) -> None:

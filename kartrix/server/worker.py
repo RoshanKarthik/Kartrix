@@ -21,7 +21,17 @@ from typing import Any, BinaryIO, TextIO
 
 from pydantic import ValidationError
 
-from kartrix.server.protocol import OP_ADAPTER, ApprovalOp, PlanReviewOp, RunOp, ShutdownOp, StopOp, decode, encode
+from kartrix.server.protocol import (
+    OP_ADAPTER,
+    ApprovalOp,
+    CommandOp,
+    PlanReviewOp,
+    RunOp,
+    ShutdownOp,
+    StopOp,
+    decode,
+    encode,
+)
 
 STOP_REASON = "stopped from the API"
 
@@ -114,7 +124,15 @@ def _read_protocol(source: BinaryIO, loop: asyncio.AbstractEventLoop, queue: asy
     loop.call_soon_threadsafe(queue.put_nowait, None)  # the server closed our stdin: shut down
 
 
-async def _serve(channel: Channel, source: BinaryIO, session_id: str, mcp: bool, model: str | None = None) -> int:
+async def _serve(
+    channel: Channel,
+    source: BinaryIO,
+    session_id: str,
+    mcp: bool,
+    model: str | None = None,
+    mode: str | None = None,
+) -> int:
+    from kartrix.core import commands
     from kartrix.core.events import bus
     from kartrix.core.session import CoreSession, StartOptions
 
@@ -127,6 +145,11 @@ async def _serve(channel: Channel, source: BinaryIO, session_id: str, mcp: bool,
         channel.send({"kind": "start_failed", "detail": f"{type(e).__name__}: {e}"})
         unsubscribe()
         return 1
+    if mode is not None:
+        from kartrix.security.permissions import set_mode
+
+        with contextlib.suppress(ValueError):
+            set_mode(mode)  # the mode /mode chose before this worker was restarted
     channel.send({"kind": "ready"})
 
     loop = asyncio.get_running_loop()
@@ -134,6 +157,8 @@ async def _serve(channel: Channel, source: BinaryIO, session_id: str, mcp: bool,
     reader = threading.Thread(target=_read_protocol, args=(source, loop, inbox), name="kartrix-worker-in", daemon=True)
     reader.start()
     running: asyncio.Task[None] | None = None
+    command_lock = asyncio.Lock()  # one command at a time
+    command_tasks: set[asyncio.Task[None]] = set()
 
     async def do_run(op: RunOp) -> None:
         try:
@@ -156,6 +181,23 @@ async def _serve(channel: Channel, source: BinaryIO, session_id: str, mcp: bool,
             message = {"status": "error", "detail": f"{type(e).__name__}: {e}"}
         channel.send({"kind": "run_finished", "run_id": op.run_id, **message})
 
+    async def do_command(op: CommandOp) -> None:
+        reply: dict[str, Any] = {"kind": "command_result", "request_id": op.request_id}
+        async with command_lock:
+            if commands.COMMANDS.get(op.name) and running is not None and not running.done():
+                channel.send(
+                    {**reply, "ok": False, "busy": True, "error": "a run is in progress — try again when it ends"}
+                )
+                return
+            try:
+                result = await commands.run(core, op.name, op.args)
+            except commands.CommandError as e:
+                channel.send({**reply, "ok": False, "error": str(e)})
+            except Exception as e:  # a bug or a dead database: say so instead of hanging the request
+                channel.send({**reply, "ok": False, "error": f"{type(e).__name__}: {e}"})
+            else:
+                channel.send({**reply, "ok": True, "result": result})
+
     try:
         while True:
             line = await inbox.get()
@@ -173,6 +215,10 @@ async def _serve(channel: Channel, source: BinaryIO, session_id: str, mcp: bool,
                     channel.send({"kind": "run_finished", "run_id": op.run_id, "status": "error", "detail": "busy"})
                     continue
                 running = asyncio.create_task(do_run(op), name=f"kartrix-run-{op.run_id}")
+            elif isinstance(op, CommandOp):
+                task = asyncio.create_task(do_command(op), name=f"kartrix-command-{op.name}")
+                command_tasks.add(task)
+                task.add_done_callback(command_tasks.discard)
             elif isinstance(op, ApprovalOp | PlanReviewOp):
                 front.answer(op)
             elif isinstance(op, StopOp) and running is not None and not running.done():
@@ -186,15 +232,17 @@ async def _serve(channel: Channel, source: BinaryIO, session_id: str, mcp: bool,
             front.cancel_all()
             with contextlib.suppress(Exception, asyncio.CancelledError):
                 await asyncio.wait_for(running, timeout=30)
+        if command_tasks:  # let a command in flight (an /undo halfway through its files) finish and answer
+            await asyncio.wait(command_tasks, timeout=60)
         unsubscribe()
         await core.close()
     return 0
 
 
-def run_worker(session_id: str, mcp: bool = False, model: str | None = None) -> int:
+def run_worker(session_id: str, mcp: bool = False, model: str | None = None, mode: str | None = None) -> int:
     """Entry point of ``kartrix worker`` (started by the server, never by hand)."""
     protocol_in, protocol_out = private_protocol_pipes()
-    return asyncio.run(_serve(Channel(protocol_out), protocol_in, session_id, mcp, model))
+    return asyncio.run(_serve(Channel(protocol_out), protocol_in, session_id, mcp, model, mode))
 
 
 def private_protocol_pipes() -> tuple[BinaryIO, TextIO]:

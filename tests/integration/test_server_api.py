@@ -252,6 +252,45 @@ async def test_live_feed_through_the_client(server: tuple[FakePool, httpx.AsyncC
     await client.close()
 
 
+async def test_workspace_commands(
+    server: tuple[FakePool, httpx.AsyncClient], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kartrix.server.workers import PoolError
+
+    pool, http = server
+    ada, bob = await _signup(http, "ada@example.com"), await _signup(http, "bob@example.com")
+    ws = await _workspace(http, ada, tmp_path / "repo")
+    calls: list[dict[str, Any]] = []
+
+    async def command(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        if kwargs["name"] == "undo":
+            raise PoolError(409, "a run is in progress in this workspace — try again when it ends")
+        return {"mode": "read_only", "modes": ["read_only", "default", "auto"], "changed": True}
+
+    real_command = pool.command
+    monkeypatch.setattr(pool, "command", command)
+    client = KartrixClient("http://kartrix.test", ada["Authorization"].split()[1], transport=http._transport)
+    assert (await client.command(ws["id"], "mode", {"target": "read_only"}))["mode"] == "read_only"
+    (call,) = calls
+    assert (call["name"], call["args"], str(call["workspace_id"])) == ("mode", {"target": "read_only"}, ws["id"])
+    assert str(call["root"]) == str((tmp_path / "repo").resolve()) and uuid.UUID(call["session_id"])
+
+    r = await http.post(f"/workspaces/{ws['id']}/commands", json={"name": "undo"}, headers=ada)
+    assert r.status_code == 409 and "run is in progress" in r.json()["detail"]
+    r = await http.post(f"/workspaces/{ws['id']}/commands", json={"name": "mode"}, headers=bob)
+    assert r.status_code == 404 and len(calls) == 2  # someone else's workspace: never reaches the pool
+    r = await http.post(
+        f"/workspaces/{ws['id']}/commands", json={"name": "x", "args": {"t": "a" * 60_000}}, headers=ada
+    )
+    assert r.status_code == 422
+
+    monkeypatch.setattr(pool, "command", real_command)
+    r = await http.post(f"/workspaces/{ws['id']}/commands", json={"name": "shell", "args": {}}, headers=ada)
+    assert r.status_code == 422 and "unknown command" in r.json()["detail"]
+    await client.close()
+
+
 async def test_sessions_continue_and_stay_in_their_workspace(
     server: tuple[FakePool, httpx.AsyncClient], tmp_path: Path
 ) -> None:

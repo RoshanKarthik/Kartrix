@@ -1,26 +1,20 @@
 """The REPL's slash commands (loaded in the background with the core, so the prompt appears at once)."""
 
-import asyncio
-import sys
-from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
 from rich.markup import escape
-from rich.prompt import Confirm
 from rich.table import Table
 
 from kartrix.config import settings
+from kartrix.core import commands as core_commands
 from kartrix.core.session import CoreSession
-from kartrix.mcp.mcp_client import McpError, McpManager
-from kartrix.memory import long_term
 from kartrix.memory.session import InvalidSessionIdError, new_session, switch_session
 from kartrix.observability.logger import get_logger
-from kartrix.security import audit, checkpoints, external_tools
+from kartrix.security import audit
 from kartrix.security.budget import Budget
-from kartrix.security.permissions import MODES, clear_session_allowances, get_mode, set_mode
-from kartrix.skills.registry import SkillNotFoundError
-from kartrix.skills.skill_tools import get_registry
+from kartrix.security.permissions import clear_session_allowances
+from kartrix.ui.command_views import execute
 from kartrix.ui.views import show_index, show_task_status
 
 console = Console()
@@ -48,221 +42,6 @@ async def show_audit(session_id: str, arg: str) -> None:
             str(row.details.get("duration_ms", "")),
         )
     console.print(table)
-
-
-async def handle_mcp_command(command: str, arg: str, mcp: McpManager, session_id: str) -> bool:
-    """/mcp, /connect <server>, /disconnect <server>. True if the agent's tools changed."""
-    if command == "/mcp" or not arg:
-        try:
-            servers = McpManager.available()
-        except McpError as e:
-            console.print(f"[red]{e}[/red]")
-            return False
-        table = Table(title="MCP servers")
-        for col in ("server", "status", "tools", "description"):
-            table.add_column(col)
-        for name, server in servers.items():
-            connected = name in mcp.connected
-            count = sum(1 for t in mcp.tools if (ext := external_tools.get(t.name)) and ext.server == name)
-            status = "[green]connected[/green]" if connected else "off"
-            table.add_row(name, status, str(count) if connected else "", server.description)
-        console.print(table)
-        console.print("[dim]/connect <server> to turn one on; it stays on for later sessions until /disconnect.[/dim]")
-        return False
-    if command == "/connect":
-        console.print(f"[dim]Connecting {arg} (on first use the server is downloaded and verified)...[/dim]")
-        try:
-            tools = await mcp.connect(arg)
-        except McpError as e:
-            console.print(f"[red]{e}[/red]")
-            await audit.record(actor="user", action="mcp.connect", target=arg, outcome="error", session_id=session_id)
-            return False
-        approve = sum(1 for t in tools if (ext := external_tools.get(t.name)) and ext.needs_approval)
-        console.print(f"[green]✓ {arg} connected: {len(tools)} tools ({approve} need your approval to run).[/green]")
-        await audit.record(
-            actor="user", action="mcp.connect", target=arg, outcome="ok", session_id=session_id,
-            details={"tools": [t.name for t in tools]},
-        )  # fmt: skip
-        return True
-    await mcp.disconnect(arg)
-    console.print(f"[dim]{arg} disconnected.[/dim]")
-    await audit.record(actor="user", action="mcp.disconnect", target=arg, outcome="ok", session_id=session_id)
-    return True
-
-
-async def handle_skills_command(arg: str, session_id: str) -> bool:
-    """/skills, /skills trust <name>, /skills untrust <name>. True if the trusted set changed."""
-    registry = get_registry()
-    action, _, name = arg.partition(" ")
-    if action in ("trust", "untrust") and name.strip():
-        name = name.strip()
-        try:
-            if action == "untrust":
-                registry.untrust(name)
-                console.print(f"[dim]Skill {name} is no longer approved.[/dim]")
-            else:
-                skill = registry.trust(name)
-                console.print(f"[green]✓ Skill {name} approved[/green] [dim](sha256 {skill.digest[:16]}…)[/dim]")
-        except SkillNotFoundError as e:
-            console.print(f"[red]{e}[/red]")
-            return False
-        await audit.record(actor="user", action=f"skills.{action}", target=name, outcome="ok", session_id=session_id)
-        return True
-    if arg:
-        console.print("[yellow]Usage: /skills, /skills trust <name>, /skills untrust <name>[/yellow]")
-        return False
-
-    skills = registry.skills()
-    if not skills:
-        console.print("[dim]This repo has no skills (.kartrix/skills/).[/dim]")
-        return False
-    colors = {"trusted": "green", "untrusted": "yellow", "changed": "red"}
-    for skill in skills:
-        status = registry.status(skill.name)
-        files = [p for p in sorted(skill.skill_dir.rglob("*")) if p.is_file()]
-        console.print(
-            f"[bold]{skill.name}[/bold] [{colors[status]}]{status}[/{colors[status]}] — {escape(skill.description)}"
-        )
-        console.print(f"  [dim]{len(files)} files in {skill.skill_dir.relative_to(Path.cwd()).as_posix()}[/dim]")
-        if skill.findings:
-            rules = ", ".join(sorted({f.rule for f in skill.findings}))
-            console.print(f"  [red]⚠ contains text that looks like prompt injection ({rules})[/red]")
-    console.print("[dim]Review a skill's files before approving it: /skills trust <name>[/dim]")
-    return False
-
-
-MEMORY_USAGE = "Usage: /memory, /memory add [--user] <text>, /memory forget <id>"
-
-
-async def handle_memory_command(arg: str, session_id: str) -> None:
-    """/memory (list), /memory add [--user] <text>, /memory forget <id or id prefix>."""
-    action, _, rest = arg.partition(" ")
-    rest = rest.strip()
-    if action == "add" and rest:
-        user = rest.startswith("--user")
-        content = rest.removeprefix("--user").strip()
-        if not content:
-            console.print(f"[yellow]{escape(MEMORY_USAGE)}[/yellow]")
-            return
-        kind: long_term.Kind = "preference" if user else "fact"
-        memory_id = await long_term.remember(content, kind, source="user")
-        scope = "every repository" if user else "this repository"
-        console.print(f"[green]✓ Remembered ({kind}, {scope}): {memory_id[:8]}[/green]")
-        await audit.record(actor="user", action="memory.add", target=memory_id, outcome="ok", session_id=session_id)
-        return
-    if action == "forget" and rest:
-        matches = [m for m in await long_term.list_memories() if str(m.id).startswith(rest.lower())]
-        if len(matches) != 1:
-            console.print("[red]No memory with that id.[/red]" if not matches else "[red]Ambiguous id prefix.[/red]")
-            return
-        await long_term.forget(str(matches[0].id))
-        console.print(f"[dim]Forgot: {escape(matches[0].content[:80])}[/dim]")
-        await audit.record(
-            actor="user", action="memory.forget", target=str(matches[0].id), outcome="ok", session_id=session_id
-        )
-        return
-    if arg:
-        console.print(f"[yellow]{escape(MEMORY_USAGE)}[/yellow]")
-        return
-    memories = await long_term.list_memories()
-    if not memories:
-        console.print(
-            "[dim]No memories yet. /memory add <text> (or --user for a preference); "
-            f"{long_term.PROJECT_FILE} at the repo root is always loaded.[/dim]"
-        )
-        return
-    table = Table(title="Long-term memory (newest first)")
-    for col in ("id", "kind", "scope", "source", "updated", "uses", "content"):
-        table.add_column(col)
-    for m in memories:
-        table.add_row(
-            str(m.id)[:8], m.kind, m.scope, m.source, m.updated_at.astimezone().strftime("%m-%d %H:%M"),
-            str(m.uses), escape(m.content[:100]),
-        )  # fmt: skip
-    console.print(table)
-    console.print("[dim]/memory forget <id> removes one.[/dim]")
-
-
-def _when(ts: float) -> str:
-    return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
-
-
-def _list_files(title: str, files: list[str], color: str = "dim", limit: int = 15) -> None:
-    if not files:
-        return
-    console.print(f"[{color}]{title}:[/{color}]")
-    for f in files[:limit]:
-        console.print(f"  [{color}]{escape(f)}[/{color}]")
-    if len(files) > limit:
-        console.print(f"  [{color}]… and {len(files) - limit} more[/{color}]")
-
-
-async def handle_checkpoint_command(command: str, arg: str, session_id: str) -> None:
-    """/undo, /redo [force], /checkpoints."""
-    store = checkpoints.current()
-    if store is None:
-        console.print(f"[yellow]Checkpoints are off: {checkpoints.unavailable_reason()}[/yellow]")
-        return
-    if command == "/checkpoints":
-        undo, redo = await asyncio.to_thread(store.entries)
-        if not undo and not redo:
-            console.print("[dim]No checkpoints yet — every chat turn and /plan task that changes files gets one.[/dim]")
-            return
-        table = Table(title="Checkpoints (newest first)")
-        for col in ("", "when", "change", "files"):
-            table.add_column(col)
-        for entry in reversed(redo):
-            table.add_row("[dim]undone[/dim]", _when(entry.created), escape(entry.label[:70]), str(entry.file_count))
-        for i, entry in enumerate(reversed(undo)):
-            mark = "[green]/undo →[/green]" if i == 0 else ""
-            table.add_row(mark, _when(entry.created), escape(entry.label[:70]), str(entry.file_count))
-        console.print(table)
-        return
-
-    step = store.undo if command == "/undo" else store.redo
-    verb = "undo" if command == "/undo" else "redo"
-    result = await asyncio.to_thread(step, arg == "force")
-    if result is None:
-        console.print(f"[dim]Nothing to {verb}.[/dim]")
-        return
-    if not result.applied:
-        console.print(f"[yellow]These files changed after “{escape(result.entry.label[:80])}”:[/yellow]")
-        _list_files("changed since", result.conflicts, "yellow")
-        if not sys.stdin.isatty():
-            console.print(f"[yellow]Nothing was changed. Run /{verb} force to overwrite them.[/yellow]")
-            return
-        if not await asyncio.to_thread(Confirm.ask, f"{verb.capitalize()} anyway and overwrite those changes?"):
-            console.print("[dim]Nothing was changed.[/dim]")
-            return
-        result = await asyncio.to_thread(step, True)
-        if result is None or not result.applied:
-            return
-    done = "Undid" if verb == "undo" else "Redid"
-    console.print(
-        f"[green]✓ {done}: {escape(result.entry.label[:80])}[/green] "
-        f"[dim]({len(result.restored)} restored, {len(result.deleted)} deleted)[/dim]"
-    )
-    _list_files("restored", result.restored)
-    _list_files("deleted", result.deleted)
-    _list_files("could not delete", result.errors, "red")
-    if result.conflicts:
-        console.print("[dim]The overwritten versions are kept in the checkpoint store.[/dim]")
-    if verb == "undo" and result.entry.label.startswith("task "):
-        console.print("[dim]The task stays marked completed in /task_status.[/dim]")
-    await audit.record(
-        actor="user",
-        action=f"checkpoint.{verb}",
-        target=result.entry.label,
-        outcome="ok",
-        session_id=session_id,
-        details={
-            "entry": result.entry.id,
-            "restored": result.restored[:200],
-            "deleted": result.deleted[:200],
-            "overwritten": result.conflicts[:200],
-            "errors": result.errors,
-        },
-    )
 
 
 def show_trace(ref: str | None) -> None:
@@ -329,7 +108,9 @@ def print_help() -> None:
 async def dispatch(core: CoreSession, user_input: str) -> None:
     """Run one REPL command (anything but /exit and /help, which work before startup finishes). Text that isn't a
     command is a request — the same as ``/ask``."""
-    if user_input.startswith("/ask ") or not user_input.startswith("/"):
+    if core_commands.is_command(user_input):
+        await execute(console, user_input, lambda name, args: core_commands.run(core, name, args))
+    elif user_input.startswith("/ask ") or not user_input.startswith("/"):
         question = user_input.removeprefix("/ask ").strip()
         logger.info(f"Ask command received: {question}")
         await core.ask(question)
@@ -368,24 +149,6 @@ async def dispatch(core: CoreSession, user_input: str) -> None:
         await show_task_status(console)
     elif user_input == "/audit" or user_input.startswith("/audit "):
         await show_audit(core.session_id, user_input.removeprefix("/audit").strip())
-    elif user_input == "/mode" or user_input.startswith("/mode "):
-        target = user_input.removeprefix("/mode").strip()
-        if target:
-            try:
-                previous = get_mode()
-                set_mode(target)
-            except ValueError as e:
-                console.print(f"[red]{e}[/red]")
-            else:
-                await audit.record(
-                    actor="user",
-                    action="permissions.mode",
-                    target=target,
-                    outcome="ok",
-                    session_id=core.session_id,
-                    details={"previous": previous},
-                )
-        console.print(f"[dim]Permission mode: {get_mode()} (available: {', '.join(MODES)})[/dim]")
     elif user_input == "/model" or user_input.startswith("/model "):
         target = user_input.removeprefix("/model").strip()
         if not target:
@@ -398,22 +161,10 @@ async def dispatch(core: CoreSession, user_input: str) -> None:
             core.set_model(target)
         except ValueError as e:
             console.print(f"[red]{escape(str(e))}[/red]")
-    elif user_input.split()[0] in ("/mcp", "/connect", "/disconnect"):
-        command, _, arg = user_input.partition(" ")
-        if core.mcp is not None and await handle_mcp_command(command, arg.strip(), core.mcp, core.session_id):
-            core.rebuild_agent()
-    elif user_input.split()[0] in ("/undo", "/redo", "/checkpoints"):
-        command, _, arg = user_input.partition(" ")
-        await handle_checkpoint_command(command, arg.strip(), core.session_id)
     elif user_input == "/budget":
         show_budget(core.last_budget)
     elif user_input == "/trace" or user_input.startswith("/trace "):
         show_trace(user_input.removeprefix("/trace").strip() or None)
-    elif user_input == "/memory" or user_input.startswith("/memory "):
-        await handle_memory_command(user_input.removeprefix("/memory").strip(), core.session_id)
-    elif user_input == "/skills" or user_input.startswith("/skills "):
-        if await handle_skills_command(user_input.removeprefix("/skills").strip(), core.session_id):
-            core.rebuild_agent()
     else:
         logger.warning(f"Unknown command received: {user_input}")
         console.print("[yellow]Unknown command.[/yellow]")

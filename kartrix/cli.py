@@ -35,7 +35,17 @@ def _version() -> str:
         return "unknown"
 
 
+def safe_stdio() -> None:
+    """Output uses ✓ / — / …: UTF-8 when redirected to a file or pipe, and a character a legacy console's code page
+    lacks (cp1252) becomes "?" instead of a crash."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(**({"errors": "replace"} if stream.isatty() else {"encoding": "utf-8", "errors": "replace"}))
+
+
 def main(argv: list[str] | None = None) -> int:
+    safe_stdio()
     parser = argparse.ArgumentParser(prog="kartrix", description="Kartrix - security-first AI coding agent.")
     parser.add_argument("--version", action="version", version=f"kartrix {_version()}")
     parser.add_argument(
@@ -87,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     worker.add_argument("--session", required=True)
     worker.add_argument("--mcp", action="store_true")
     worker.add_argument("--model")
+    worker.add_argument("--mode")
     commands.add_parser(
         "stop",
         help="stop every Kartrix run in progress on this machine (kill switch)",
@@ -132,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "worker":
         from kartrix.server.worker import run_worker
 
-        return run_worker(args.session, args.mcp, args.model)
+        return run_worker(args.session, args.mcp, args.model, args.mode)
     if args.command == "keys":
         return _keys(args.action, args.name)
     if args.command in ("update", "uninstall"):

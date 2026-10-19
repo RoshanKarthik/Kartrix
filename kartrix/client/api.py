@@ -140,6 +140,18 @@ class KartrixClient:
         result: dict[str, Any] = await self._call("POST", "/workspaces", {"name": name, "path": path})
         return result
 
+    async def command(self, workspace_id: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """A workspace command (kartrix.core.commands) carried out by the server; its result."""
+        # the server may start the workspace's agent first (up to 180 s), then 60 s per command (300 s for /connect)
+        timeout = httpx.Timeout(540.0 if name == "mcp.connect" else 300.0)
+        response = await self._http.post(
+            f"/workspaces/{workspace_id}/commands", json={"name": name, "args": args}, timeout=timeout
+        )
+        if response.status_code >= 400:
+            raise ApiError(response.status_code, _detail(response))
+        result: dict[str, Any] = response.json()["result"]
+        return result
+
     # runs
     async def start_run(
         self,

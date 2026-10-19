@@ -3,7 +3,8 @@ review as the local REPL, but every request runs on the server (``kartrix`` afte
 
 The current folder becomes a workspace on the server the first time (a local server only — a hosted
 one works on repositories it holds itself). Ctrl+C asks the server to stop the run; a second Ctrl+C
-quits. Commands that change local state (``/undo``, ``/mode``, ``/memory`` …) still need ``kartrix --local``.
+quits. Workspace commands (``/undo``, ``/redo``, ``/checkpoints``, ``/mode``, ``/memory``, ``/skills``, ``/mcp``,
+``/connect``, ``/disconnect``) run in the workspace's agent on the server, rendered like the local REPL's.
 """
 
 from __future__ import annotations
@@ -20,13 +21,16 @@ from rich.console import Console
 from rich.markup import escape
 
 from kartrix.client.api import ApiError, Credentials, KartrixClient
+from kartrix.core import commands as workspace_commands
 from kartrix.core.events import EVENT_ADAPTER
 from kartrix.ui.console import ConsoleRenderer
 
 _HELP = (
-    "[dim]/ask <question> · /plan <goal> · /model [id] · /new (new conversation) · /whoami · /exit · "
+    "[dim]/ask <question> · /plan <goal> · /model \\[id] · /new (new conversation) · /whoami · /exit · "
     "Ctrl+C stops a run\n"
-    "Other commands (/undo, /mode, /memory, /skills, /mcp …) need the local mode: kartrix --local[/dim]"
+    "/undo · /redo · /checkpoints · /mode \\[read_only|default|auto] · /memory \\[add \\[--user] <text>|forget <id>] · "
+    "/skills \\[trust|untrust <name>] · /mcp · /connect <server> · /disconnect <server>\n"
+    "Other commands (/audit, /trace, /budget, /reindex …) need the local mode: kartrix --local[/dim]"
 )
 _LOCAL_ONLY = "isn't available through the server yet — run `kartrix --local` for it"
 
@@ -165,6 +169,19 @@ async def _pick_model(
     return target
 
 
+async def _server_command(client: KartrixClient, console: Console, workspace_id: str, line: str) -> None:
+    """A workspace command, carried out by the workspace's agent on the server."""
+    from kartrix.ui.command_views import execute
+
+    async def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return await client.command(workspace_id, name, args)
+        except ApiError as e:
+            raise workspace_commands.CommandError(e.detail) from None
+
+    await execute(console, line, call)
+
+
 async def run_remote(creds: Credentials, console: Console | None = None, model: str | None = None) -> int:
     from kartrix.main import in_daemon_thread
 
@@ -220,6 +237,9 @@ async def run_remote(creds: Credentials, console: Console | None = None, model: 
             if command == "/new":
                 new_session = True
                 console.print("[dim]The next request starts a new conversation.[/dim]")
+                continue
+            if workspace_commands.is_command(line):
+                await _server_command(client, console, workspace["id"], line)
                 continue
             if command in ("/ask", "/plan"):
                 kind, text = command[1:], rest.strip()

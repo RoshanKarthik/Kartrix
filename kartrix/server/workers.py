@@ -6,7 +6,8 @@
 - :class:`RunFeed` — the messages of one run, in order. Every message but ``assistant_delta`` events gets a
   sequence number and is written to ``run_events``; live subscribers (SSE streams) get a backlog from memory
   plus a queue, set up without an ``await`` in between, so nothing is lost or sent twice.
-- :class:`WorkerPool` — starts runs, routes answers and stops, shuts idle workers down.
+- :class:`WorkerPool` — starts runs, routes answers, stops and workspace commands (``/undo``, ``/mode`` …),
+  shuts idle workers down.
 
 Threads touch nothing here except through ``loop.call_soon_threadsafe``.
 """
@@ -33,9 +34,22 @@ from kartrix.config import settings
 from kartrix.db.engine import session_scope
 from kartrix.db.models import Run, RunEvent
 from kartrix.observability.logger import get_logger
-from kartrix.server.protocol import ApprovalOp, Decision, PlanReviewOp, RunOp, ShutdownOp, StopOp, decode, encode
+from kartrix.server.protocol import (
+    ApprovalOp,
+    CommandOp,
+    Decision,
+    PlanReviewOp,
+    RunOp,
+    ShutdownOp,
+    StopOp,
+    decode,
+    encode,
+)
 
 logger = get_logger(__name__)
+
+COMMAND_SECONDS = 60.0
+CONNECT_SECONDS = 300.0  # /connect may download the MCP server first
 
 
 class PoolError(Exception):
@@ -102,6 +116,7 @@ class WorkerProcess:
         self.proc: subprocess.Popen[bytes] | None = None
         self.ready: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self.feed: RunFeed | None = None
+        self.commands: dict[str, asyncio.Future[dict[str, Any]]] = {}  # open command id → its answer
         self.last_active = time.monotonic()
         self.exited = False
         self._stdin_lock = threading.Lock()
@@ -111,7 +126,7 @@ class WorkerProcess:
     def busy(self) -> bool:
         return self.feed is not None and not self.feed.finished
 
-    def start(self, session_id: str, model: str | None = None) -> None:
+    def start(self, session_id: str, model: str | None = None, mode: str | None = None) -> None:
         loop = asyncio.get_running_loop()
         logs = self.pool.data_dir / "logs"
         logs.mkdir(parents=True, exist_ok=True)
@@ -120,6 +135,8 @@ class WorkerProcess:
         argv = [sys.executable, "-m", "kartrix.cli", "worker", "--session", session_id]
         if model is not None:
             argv += ["--model", model]  # built with it, rather than switched before the first run
+        if mode is not None:
+            argv += ["--mode", mode]  # what /mode chose for this workspace, before an idle restart
         if settings.server.allow_local_paths:
             argv.append("--mcp")  # the user's own machine: their connected MCP servers too
         group: dict[str, Any] = (
@@ -167,6 +184,11 @@ class WorkerProcess:
             if not self.ready.done():
                 self.ready.set_exception(PoolError(500, f"the agent could not start: {message.get('detail')}"))
             return
+        if kind == "command_result":
+            answer = self.commands.pop(str(message.get("request_id")), None)
+            if answer is not None and not answer.done():
+                answer.set_result(message)
+            return
         feed = self.feed
         if feed is None or feed.finished or feed.ending:
             return  # between runs (e.g. "index ready"): nobody is listening
@@ -187,6 +209,10 @@ class WorkerProcess:
         logger.info("Worker exited", extra={"workspace": str(self.workspace_id), "code": code})
         if not self.ready.done():
             self.ready.set_exception(PoolError(500, f"the agent's worker exited while starting (code {code})"))
+        for answer in self.commands.values():
+            if not answer.done():
+                answer.set_exception(PoolError(500, f"the agent's worker exited (code {code})"))
+        self.commands.clear()
         if self.feed is not None and not self.feed.finished:
             detail = f"the agent's worker exited (code {code}) — see the server's worker log"
             self.pool.finish(self, self.feed, {"status": "error", "detail": detail})
@@ -210,6 +236,7 @@ class WorkerPool:
         self.data_dir = data_dir
         self.workers: dict[uuid.UUID, WorkerProcess] = {}
         self.feeds: dict[uuid.UUID, RunFeed] = {}
+        self.modes: dict[uuid.UUID, str] = {}  # workspace → permission mode set with /mode (until the server restarts)
         self._writes: asyncio.Queue[Callable[[], Awaitable[None]]] | None = None
         self._writer: asyncio.Task[None] | None = None
         self._reaper: asyncio.Task[None] | None = None
@@ -268,12 +295,9 @@ class WorkerPool:
         worker = self.workers.get(workspace_id)
         if worker is not None and worker.busy:
             raise PoolError(409, "a run is already in progress in this workspace")
-        if worker is None:
-            if len(self.workers) >= settings.server.max_workers and not await self._evict_one():
-                raise PoolError(503, "the server is at its limit of active workspaces — try again shortly")
-            worker = WorkerProcess(self, workspace_id, user_id, root)
-            self.workers[workspace_id] = worker
-            worker.start(op.session_id, op.model)
+        if worker is not None and worker.commands:
+            raise PoolError(409, "a command is still running in this workspace — try again in a moment")
+        worker = await self._worker_for(user_id, workspace_id, root, op.session_id, op.model)
         feed = RunFeed(run_id, workspace_id)
         self.feeds[run_id] = feed
         worker.feed = feed
@@ -282,6 +306,65 @@ class WorkerPool:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return feed
+
+    async def _worker_for(
+        self, user_id: uuid.UUID, workspace_id: uuid.UUID, root: Path, session_id: str, model: str | None = None
+    ) -> WorkerProcess:
+        """The workspace's worker, started if it isn't running."""
+        worker = self.workers.get(workspace_id)
+        if worker is not None:
+            return worker
+        if len(self.workers) >= settings.server.max_workers and not await self._evict_one():
+            raise PoolError(503, "the server is at its limit of active workspaces — try again shortly")
+        worker = WorkerProcess(self, workspace_id, user_id, root)
+        self.workers[workspace_id] = worker
+        worker.start(session_id, model, self.modes.get(workspace_id))
+        return worker
+
+    async def command(
+        self,
+        *,
+        user_id: uuid.UUID,
+        workspace_id: uuid.UUID,
+        root: Path,
+        session_id: str,
+        name: str,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Run a workspace command in the workspace's worker (started if needed) and return its result.
+        Commands that change something are refused while a run is in progress."""
+        from kartrix.core.commands import COMMANDS
+
+        if name not in COMMANDS:
+            raise PoolError(422, f"unknown command {name!r}")
+        worker = self.workers.get(workspace_id)
+        if worker is not None and worker.busy and COMMANDS[name]:
+            raise PoolError(409, "a run is in progress in this workspace — try again when it ends")
+        worker = await self._worker_for(user_id, workspace_id, root, session_id)
+        try:
+            await asyncio.wait_for(asyncio.shield(worker.ready), settings.server.worker_start_timeout)
+        except TimeoutError:
+            raise PoolError(504, "the agent took too long to start") from None
+        request_id = uuid.uuid4().hex
+        answer: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        worker.commands[request_id] = answer
+        worker.last_active = time.monotonic()
+        try:
+            worker.send(CommandOp(request_id=request_id, name=name, args=args))
+            timeout = CONNECT_SECONDS if name == "mcp.connect" else COMMAND_SECONDS
+            message = await asyncio.wait_for(answer, timeout)
+        except TimeoutError:
+            raise PoolError(504, f"{name} took too long") from None
+        finally:
+            worker.commands.pop(request_id, None)
+            worker.last_active = time.monotonic()
+        if not message.get("ok"):
+            status = 409 if message.get("busy") else 422
+            raise PoolError(status, str(message.get("error") or f"{name} failed"))
+        result: dict[str, Any] = message.get("result") or {}
+        if name == "mode" and result.get("changed"):
+            self.modes[workspace_id] = str(result["mode"])
+        return result
 
     async def _dispatch(self, worker: WorkerProcess, feed: RunFeed, op: RunOp) -> None:
         try:

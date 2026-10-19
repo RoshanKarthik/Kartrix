@@ -1,13 +1,14 @@
 """The JSON-lines protocol between the server and a workspace's worker process.
 
 Server → worker (stdin), one object per line, discriminated by ``op``:
-``run`` · ``approval`` · ``plan_review`` · ``stop`` · ``shutdown``.
+``run`` · ``approval`` · ``plan_review`` · ``command`` · ``stop`` · ``shutdown``.
 
 Worker → server (stdout), discriminated by ``kind``:
 ``ready`` · ``start_failed`` · ``event`` (a core event) · ``approval_needed`` · ``plan_review_needed`` ·
-``run_finished``.
+``run_finished`` · ``command_result`` (``request_id``, ``ok``, ``result`` or ``error``).
 
-The same message kinds (minus ``ready``/``start_failed``) are what clients receive on a run's SSE feed,
+The same message kinds (minus ``ready``/``start_failed``/``command_result``) are what clients receive on a run's
+SSE feed; a command's result is the answer to its HTTP request,
 so a worker in a cloud sandbox (phase 3) only has to speak this protocol.
 """
 
@@ -50,6 +51,16 @@ class PlanReviewOp(BaseModel):
     feedback: str = ""  # approved=False: what should change in the re-plan
 
 
+class CommandOp(BaseModel):
+    """A workspace command (:mod:`kartrix.core.commands`): ``/undo``, ``/mode``, ``/memory`` … The worker
+    answers with ``command_result`` (same ``request_id``), never on a run's feed."""
+
+    op: Literal["command"] = "command"
+    request_id: str
+    name: str = Field(max_length=40)
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
 class StopOp(BaseModel):
     op: Literal["stop"] = "stop"
 
@@ -58,7 +69,7 @@ class ShutdownOp(BaseModel):
     op: Literal["shutdown"] = "shutdown"
 
 
-Op = Annotated[RunOp | ApprovalOp | PlanReviewOp | StopOp | ShutdownOp, Field(discriminator="op")]
+Op = Annotated[RunOp | ApprovalOp | PlanReviewOp | CommandOp | StopOp | ShutdownOp, Field(discriminator="op")]
 OP_ADAPTER: TypeAdapter[Op] = TypeAdapter(Op)
 
 # Message kinds a client sees on the SSE feed.

@@ -8,6 +8,8 @@ Routes (all JSON, under ``/v1``):
 - ``GET|POST /workspaces`` · ``GET /workspaces/{id}`` · ``GET /workspaces/{id}/sessions`` ·
   ``GET /workspaces/{id}/runs``
 - ``POST /workspaces/{id}/runs`` → the run (202); one run at a time per workspace (409)
+- ``POST /workspaces/{id}/commands`` → a workspace command's result (``/undo``, ``/mode``, ``/memory``, ``/skills``,
+  ``/mcp`` … — :mod:`kartrix.core.commands`); those that change something wait for the run in progress (409)
 - ``GET /runs/{id}`` · ``GET /runs/{id}/events`` (Server-Sent Events; ``Last-Event-ID`` or ``?after=`` replays)
 - ``POST /runs/{id}/approvals/{request_id}`` · ``POST /runs/{id}/plan-reviews/{request_id}`` ·
   ``POST /runs/{id}/stop``
@@ -27,7 +29,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select, update
 
 from kartrix.config import settings
@@ -111,6 +113,23 @@ class RunOut(_Out):
     usage: dict[str, Any] | None
     created_at: datetime
     finished_at: datetime | None
+
+
+class CommandIn(BaseModel):
+    name: str = Field(min_length=1, max_length=40)  # kartrix.core.commands.COMMANDS
+    args: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("args")
+    @classmethod
+    def _small(cls, args: dict[str, Any]) -> dict[str, Any]:
+        if len(json.dumps(args, default=str)) > MAX_INPUT:
+            raise ValueError("arguments too large")
+        return args
+
+
+class CommandOut(BaseModel):
+    name: str
+    result: dict[str, Any]
 
 
 class ApprovalIn(BaseModel):
@@ -280,6 +299,17 @@ def _hosted() -> bool:
     return not settings.server.allow_local_paths
 
 
+async def _latest_session(ws: Workspace) -> str:
+    """The workspace's latest session (a new id if it has none): commands are audited under it."""
+    async with session_scope() as s:
+        latest = (
+            await s.execute(
+                select(Session.id).where(Session.repo_path == ws.root_path).order_by(Session.updated_at.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+    return str(latest) if latest is not None else str(uuid.uuid4())
+
+
 async def _model_for(ws: Workspace, session_id: str, body: RunIn) -> str:
     """The catalog model the run uses: the one asked for, else the session's, else the default. A model that
     can't run for this user is refused with the reason. Records the session (and a picked model) right away, so
@@ -443,6 +473,19 @@ def _routes() -> Any:
                 await s.execute(update(Run).where(Run.id == run_id).values(status="error", detail=e.detail))
             raise
         return RunOut.model_validate(await _run(user, run_id))
+
+    @r.post("/workspaces/{workspace_id}/commands")
+    async def run_command(user: auth.CurrentUser, workspace_id: uuid.UUID, body: CommandIn, pool: Pool) -> CommandOut:
+        ws = await _workspace(user, workspace_id)
+        result = await pool.command(
+            user_id=user.id,
+            workspace_id=ws.id,
+            root=Path(ws.root_path),
+            session_id=await _latest_session(ws),
+            name=body.name,
+            args=body.args,
+        )
+        return CommandOut(name=body.name, result=result)
 
     @r.get("/runs/{run_id}")
     async def get_run(user: auth.CurrentUser, run_id: uuid.UUID) -> RunOut:
