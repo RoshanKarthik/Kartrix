@@ -12,5 +12,5 @@ echo "pre-commit: mypy"
 uv run --frozen mypy
 if [ "$(uv run --frozen python -c 'import sys; print(sys.platform)')" != "linux" ]; then
   echo "pre-commit: mypy as Linux (what CI runs)"
-  uv run --frozen mypy --platform linux
+  uv run --frozen mypy --platform linux --cache-dir .mypy_cache/linux  # own cache: no full re-check each time
 fi

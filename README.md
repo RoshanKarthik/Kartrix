@@ -48,7 +48,7 @@ Changed 2 file(s) — /undo reverts them
 
 ## Contents
 
-- [Architecture](#architecture) · [Install](#install) · [Quick start](#quick-start) · [Using it](#using-it) · [Security model](#security-model)
+- [Architecture](#architecture) · [Install](#install) · [Quick start](#quick-start) · [Using it](#using-it) · [VS Code](#vs-code) · [Security model](#security-model)
 - [Measured results](#measured-results) · [Evals](#evals) · [Observability](#observability) · [Development](#development)
 
 ## Architecture
@@ -171,6 +171,13 @@ kartrix run --spec task.yaml --report report.json --events events.jsonl   # exit
 kartrix trace last                                                          # where the time and tokens went
 kartrix sandbox check                                                       # what the sandbox blocks here
 ```
+
+## VS Code
+
+The extension in [`vscode/`](vscode/) puts the same agent in the editor's side bar: chat with a live feed of agent
+steps and tool calls, approvals, plan review and the model picker. It is a thin client over a local `kartrix serve`
+(started for you), so the command policy, sandbox and approvals are the terminal's. Sign in once with
+`kartrix login --signup`; see [vscode/README.md](vscode/README.md).
 
 ## Security model
 

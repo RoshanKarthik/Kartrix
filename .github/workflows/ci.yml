@@ -32,6 +32,28 @@ jobs:
       - name: Mypy
         run: uv run mypy
 
+  vscode:
+    name: VS Code extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vscode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: vscode/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Type-check
+        run: npm run typecheck
+      - name: Tests
+        run: npm test
+      - name: Build
+        run: npm run build
+
   test:
     name: Tests
     needs: lint

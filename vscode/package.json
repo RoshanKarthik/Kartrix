@@ -1,0 +1,123 @@
+{
+  "name": "kartrix",
+  "displayName": "Kartrix",
+  "description": "Security-first AI coding agent: chat, live tool calls, approvals and plan review, running on your own machine.",
+  "version": "0.1.0",
+  "publisher": "roshankarthik",
+  "license": "UNLICENSED",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RoshanKarthik/Kartrix"
+  },
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "kartrix",
+          "title": "Kartrix",
+          "icon": "media/kartrix.svg"
+        }
+      ]
+    },
+    "views": {
+      "kartrix": [
+        {
+          "type": "webview",
+          "id": "kartrix.chat",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "kartrix.newConversation",
+        "title": "New Conversation",
+        "category": "Kartrix",
+        "icon": "$(add)"
+      },
+      {
+        "command": "kartrix.stop",
+        "title": "Stop the Run",
+        "category": "Kartrix",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "kartrix.pickModel",
+        "title": "Pick a Model",
+        "category": "Kartrix"
+      },
+      {
+        "command": "kartrix.signIn",
+        "title": "Sign In",
+        "category": "Kartrix"
+      },
+      {
+        "command": "kartrix.reconnect",
+        "title": "Reconnect to the Server",
+        "category": "Kartrix",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "kartrix.newConversation",
+          "when": "view == kartrix.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "kartrix.reconnect",
+          "when": "view == kartrix.chat",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Kartrix",
+      "properties": {
+        "kartrix.cliPath": {
+          "type": "string",
+          "default": "kartrix",
+          "markdownDescription": "The `kartrix` command (a full path if it isn't on `PATH`). Used to start the local server and to sign in."
+        },
+        "kartrix.serverUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Kartrix server to use. Empty: the one you signed in to with `kartrix login`."
+        },
+        "kartrix.autoStartServer": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Start `kartrix serve` in the background when the local server isn't running."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "node esbuild.mjs --tests && node --test \"out/test/*.test.js\"",
+    "check": "npm run typecheck && npm test",
+    "package": "node esbuild.mjs --production && vsce package --no-dependencies --skip-license --out kartrix.vsix",
+    "vscode:prepublish": "node esbuild.mjs --production"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/vscode": "1.100.0",
+    "@vscode/vsce": "4.0.0",
+    "esbuild": "0.28.2",
+    "typescript": "6.0.3"
+  }
+}

@@ -26,3 +26,9 @@ htmlcov/
 # Frontend
 node_modules/
 .next/
+.npm-cache/
+
+# VS Code extension build output (vscode/)
+vscode/dist/
+vscode/out/
+vscode/*.vsix
