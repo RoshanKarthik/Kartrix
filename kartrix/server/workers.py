@@ -140,7 +140,7 @@ class WorkerProcess:
         if settings.server.allow_local_paths:
             argv.append("--mcp")  # the user's own machine: their connected MCP servers too
         group: dict[str, Any] = (
-            {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+            {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}  # Windows-only name
             if sys.platform == "win32"
             else {"start_new_session": True}
         )  # Ctrl+C in the server's terminal doesn't reach the workers; the server shuts them down
