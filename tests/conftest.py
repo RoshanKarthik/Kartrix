@@ -88,7 +88,7 @@ def _model_circuit() -> Iterator[None]:
 
 # ── Postgres ──────────────────────────────────────────────────────────
 
-_TABLES = "memories, code_edges, code_chunks, code_files, checkpoint_writes, checkpoints, tasks, approvals, projects, sessions"
+_TABLES = "run_events, runs, workspaces, api_tokens, users, memories, code_edges, code_chunks, code_files, checkpoint_writes, checkpoints, tasks, approvals, projects, sessions"
 
 
 async def _create_database(url: str) -> None:

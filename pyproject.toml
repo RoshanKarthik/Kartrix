@@ -31,6 +31,9 @@ dependencies = [
     "pathspec>=0.12,<1.0",
     "pgvector>=0.4,<1.0",
     "platformdirs>=4.12.3",
+    "fastapi>=0.115,<1.0",
+    "uvicorn>=0.32,<1.0",
+    "httpx>=0.28,<1.0",
 ]
 
 [project.scripts]

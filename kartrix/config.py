@@ -336,6 +336,23 @@ class TracingSettings(_Section):
     langsmith_project: str = "kartrix"
 
 
+class ServerSettings(_Section):
+    """``kartrix serve`` — the API the CLI, web app and VS Code extension use (kartrix/server)."""
+
+    host: str = "127.0.0.1"  # 0.0.0.0 only behind TLS on a hosted deployment
+    port: int = Field(8765, gt=0, lt=65536)
+    url: str = "http://127.0.0.1:8765"  # where clients reach it by default (`kartrix login`)
+    data_dir: str | None = None  # hosted workspaces live here; None: <user data dir>/server
+    allow_signup: bool = True  # anyone who reaches the server can create an account
+    # Local server: workspaces may be existing folders on this machine. A hosted server MUST set false —
+    # workspaces are then created under data_dir and no client can point the agent at a server path.
+    allow_local_paths: bool = True
+    max_workers: int = Field(4, gt=0)  # agent worker processes at once (one per active workspace)
+    worker_idle_seconds: float = Field(600.0, gt=0)  # a worker with no run for this long is shut down
+    worker_start_timeout: float = Field(180.0, gt=0)  # seconds for a worker to start its agent
+    token_days: int = Field(90, gt=0)  # API tokens expire after this many days
+
+
 class _UniqueKeyLoader(yaml.SafeLoader):
     """SafeLoader that rejects duplicate mapping keys instead of keeping the last one."""
 
@@ -410,6 +427,7 @@ class Settings(BaseSettings):
     database: DatabaseSettings = DatabaseSettings()
     logging: LoggingSettings = LoggingSettings()
     tracing: TracingSettings = TracingSettings()
+    server: ServerSettings = ServerSettings()
 
     @classmethod
     def settings_customise_sources(

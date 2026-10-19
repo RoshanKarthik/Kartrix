@@ -1,5 +1,5 @@
 """Core Postgres schema: sessions, projects, tasks, approvals, audit_log, code index,
-LangGraph checkpoints.
+LangGraph checkpoints — and the server's accounts, workspaces and runs (``kartrix serve``).
 
 Schema changes go through Alembic (``uv run alembic revision --autogenerate``);
 never create tables with ``metadata.create_all`` outside tests.
@@ -347,6 +347,8 @@ class Memory(Base):
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     source: Mapped[str] = mapped_column(String(16), nullable=False)  # user | agent | review
+    # the server's user who owns it; NULL for the local CLI (no accounts)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     embedding: Mapped[Any] = mapped_column(HALFVEC(EMBEDDING_DIMS), nullable=False)
     uses: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     created_at: Mapped[datetime] = _created_at()
@@ -374,3 +376,87 @@ class CodeEdge(Base):
     kind: Mapped[str] = mapped_column(String(8), nullable=False)
     target: Mapped[str] = mapped_column(Text, nullable=False)  # called name or imported module
     line: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+# ── server: accounts, workspaces, runs ────────────────────────────────
+
+
+class User(Base):
+    """An account on a Kartrix server. ``password_hash`` is scrypt (see ``kartrix.server.auth``)."""
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)  # stored lower-case
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class ApiToken(Base):
+    """A bearer token; only its SHA-256 is stored. Revoked tokens stay for the record."""
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Workspace(Base):
+    """A folder the agent works in, owned by one user. ``root_path`` is unique: the code index, sessions
+    and project memories are keyed by it, so two users never share one."""
+
+    __tablename__ = "workspaces"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    root_path: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+
+
+RUN_STATUSES = ("running", "completed", "failed", "stopped", "error")
+
+
+class Run(Base):
+    """One request sent to the server (ask or plan) and how it ended."""
+
+    __tablename__ = "runs"
+    __table_args__ = (
+        CheckConstraint("kind IN ('ask', 'plan')", name="kind_valid"),
+        CheckConstraint(f"status IN {RUN_STATUSES}", name="status_valid"),
+        Index("ix_runs_user_id_created_at", "user_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    kind: Mapped[str] = mapped_column(String(8), nullable=False)
+    input: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'running'"))
+    detail: Mapped[str | None] = mapped_column(Text)
+    answer: Mapped[str | None] = mapped_column(Text)
+    usage: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = _created_at()
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RunEvent(Base):
+    """A run's event feed, in order: what the SSE stream sends and replays after a reconnect."""
+
+    __tablename__ = "run_events"
+    __table_args__ = (PrimaryKeyConstraint("run_id", "seq"),)
+
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    data: Mapped[dict[str, Any]] = mapped_column(nullable=False)
+    ts: Mapped[datetime] = _created_at()

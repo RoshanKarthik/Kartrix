@@ -16,10 +16,15 @@ Conflicts: a new memory that is nearly the same as an existing one (cosine simil
 ``memory.dedupe_similarity``) *replaces* it — newer wins, and the old text is logged. Staleness: a
 memory that mentions a file changed after the memory was written is recalled with a "may be stale"
 note. Secrets are redacted before anything is stored or embedded.
+
+Owners: on a Kartrix server every memory belongs to the user the worker runs for
+(``KARTRIX_USER_ID``); user-level memories are only recalled for that user. The local CLI has no
+accounts (owner NULL).
 """
 
 from __future__ import annotations
 
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -28,8 +33,9 @@ from pathlib import Path
 from typing import Literal
 
 from pgvector.sqlalchemy import HALFVEC
-from sqlalchemy import bindparam, delete, or_, select, text, update
+from sqlalchemy import Uuid, and_, bindparam, delete, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from kartrix.config import settings
 from kartrix.context.indexers.pg_index import repo_key
@@ -68,6 +74,12 @@ def _root(repo_root: str | Path | None) -> Path:
     return Path(repo_root) if repo_root is not None else get_workspace().root
 
 
+def current_owner() -> uuid.UUID | None:
+    """The server user this process works for (``KARTRIX_USER_ID``); None for the local CLI."""
+    raw = os.environ.get("KARTRIX_USER_ID", "").strip()
+    return uuid.UUID(raw) if raw else None
+
+
 def _scope_for(kind: Kind) -> Literal["project", "user"]:
     return "user" if kind == "preference" else "project"
 
@@ -79,9 +91,10 @@ async def remember(content: str, kind: Kind, source: Source, repo_root: str | Pa
         raise ValueError("a memory cannot be empty")
     scope = _scope_for(kind)
     repo = repo_key(_root(repo_root)) if scope == "project" else None
+    owner = current_owner()
     vector = await get_embedder().aembed_query(content)
     async with session_scope() as s:
-        near = await _nearest(s, vector, scope, repo, kind)
+        near = await _nearest(s, vector, scope, repo, kind, owner)
         if near is not None and near[1] >= settings.memory.dedupe_similarity:
             old_id, sim, old_text = near
             await s.execute(
@@ -94,22 +107,24 @@ async def remember(content: str, kind: Kind, source: Source, repo_root: str | Pa
             )
             return str(old_id)
         row = Memory(
-            id=uuid.uuid4(), scope=scope, repo_root=repo, kind=kind, content=content, source=source, embedding=vector
-        )
+            id=uuid.uuid4(), scope=scope, repo_root=repo, kind=kind, content=content, source=source,
+            user_id=owner, embedding=vector,
+        )  # fmt: skip
         s.add(row)
     logger.info("Memory stored", extra={"kind": kind, "scope": scope, "source": source})
     return str(row.id)
 
 
 async def _nearest(
-    s: AsyncSession, vector: list[float], scope: str, repo: str | None, kind: str
+    s: AsyncSession, vector: list[float], scope: str, repo: str | None, kind: str, owner: uuid.UUID | None
 ) -> tuple[uuid.UUID, float, str] | None:
     stmt = text(
         "SELECT id, 1 - (embedding <=> :v) AS sim, content FROM memories "
         "WHERE scope = :scope AND kind = :kind AND repo_root IS NOT DISTINCT FROM :repo "
-        "ORDER BY embedding <=> :v LIMIT 1"
-    ).bindparams(bindparam("v", type_=HALFVEC(EMBEDDING_DIMS)))
-    row = (await s.execute(stmt, {"v": vector, "scope": scope, "kind": kind, "repo": repo})).first()
+        "AND user_id IS NOT DISTINCT FROM :owner ORDER BY embedding <=> :v LIMIT 1"
+    ).bindparams(bindparam("v", type_=HALFVEC(EMBEDDING_DIMS)), bindparam("owner", type_=Uuid()))
+    params = {"v": vector, "scope": scope, "kind": kind, "repo": repo, "owner": owner}
+    row = (await s.execute(stmt, params)).first()
     return (row.id, float(row.sim), row.content) if row else None
 
 
@@ -120,10 +135,11 @@ async def recall(query: str, repo_root: str | Path | None = None, k: int | None 
     vector = await get_embedder().aembed_query(query)
     stmt = text(
         "SELECT id, kind, scope, content, updated_at, 1 - (embedding <=> :v) AS sim FROM memories "
-        "WHERE scope = 'user' OR repo_root = :repo ORDER BY embedding <=> :v LIMIT :k"
-    ).bindparams(bindparam("v", type_=HALFVEC(EMBEDDING_DIMS)))
+        "WHERE (scope = 'user' AND user_id IS NOT DISTINCT FROM :owner) OR repo_root = :repo "
+        "ORDER BY embedding <=> :v LIMIT :k"
+    ).bindparams(bindparam("v", type_=HALFVEC(EMBEDDING_DIMS)), bindparam("owner", type_=Uuid()))
     async with session_scope() as s:
-        rows = (await s.execute(stmt, {"v": vector, "repo": repo, "k": k})).all()
+        rows = (await s.execute(stmt, {"v": vector, "repo": repo, "k": k, "owner": current_owner()})).all()
         ids = [r.id for r in rows if float(r.sim) >= settings.memory.min_similarity]
         if ids:
             await s.execute(
@@ -158,12 +174,16 @@ def _stale(content: str, written: datetime, root: Path) -> tuple[str, ...]:
     return tuple(changed)
 
 
+def _owned() -> ColumnElement[bool]:
+    return Memory.user_id.is_not_distinct_from(current_owner())
+
+
 async def list_memories(repo_root: str | Path | None = None) -> list[Memory]:
     repo = repo_key(_root(repo_root))
     async with session_scope() as s:
         rows = await s.execute(
             select(Memory)
-            .where(or_(Memory.scope == "user", Memory.repo_root == repo))
+            .where(or_(and_(Memory.scope == "user", _owned()), Memory.repo_root == repo))
             .order_by(Memory.updated_at.desc())
         )
         return list(rows.scalars().all())
@@ -175,7 +195,7 @@ async def forget(memory_id: str) -> bool:
     except ValueError:
         return False
     async with session_scope() as s:
-        result = await s.execute(delete(Memory).where(Memory.id == key))
+        result = await s.execute(delete(Memory).where(Memory.id == key, _owned()))
     return bool(getattr(result, "rowcount", 0))
 
 

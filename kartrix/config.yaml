@@ -207,6 +207,18 @@ tracing:                        # one JSON-lines trace per run; `kartrix trace` 
   langsmith: auto               # auto: also send traces to LangSmith when LANGSMITH_API_KEY is set; off: never
   langsmith_project: kartrix
 
+server:                         # `kartrix serve`: the API for the CLI, web app and VS Code extension
+  host: 127.0.0.1
+  port: 8765
+  url: http://127.0.0.1:8765    # default server for `kartrix login`
+  data_dir: null                # hosted workspaces; null = <user data dir>/server
+  allow_signup: true
+  allow_local_paths: true       # hosted deployments MUST set false (workspaces only under data_dir)
+  max_workers: 4                # agent worker processes at once (one per active workspace)
+  worker_idle_seconds: 600
+  worker_start_timeout: 180
+  token_days: 90
+
 database:                       # URL comes from DATABASE_URL in .env
   pool_size: 5
   max_overflow: 10

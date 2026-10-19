@@ -1,6 +1,9 @@
 """Command-line entry point.
 
-- ``kartrix`` — start the interactive session in the current directory.
+- ``kartrix`` — start the interactive session in the current directory: through the Kartrix server after
+  ``kartrix login``, else (or with ``--local``) in this process.
+- ``kartrix serve`` — run the Kartrix server (the API for the CLI, web app and VS Code extension).
+- ``kartrix login`` / ``logout`` / ``whoami`` — the account the CLI uses on a server.
 - ``kartrix stop`` — kill switch: stop every Kartrix run in progress on this machine
   (see :mod:`kartrix.security.kill_switch`). Imports almost nothing, so it works instantly.
 - ``kartrix run --spec <file>`` — one headless run (no prompts; approvals from the spec), JSON report
@@ -16,6 +19,8 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import getpass
 import sys
 from datetime import datetime
 
@@ -32,7 +37,27 @@ def _version() -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="kartrix", description="Kartrix - security-first AI coding agent.")
     parser.add_argument("--version", action="version", version=f"kartrix {_version()}")
+    parser.add_argument(
+        "--local", action="store_true", help="run the agent in this process even when logged in to a server"
+    )
     commands = parser.add_subparsers(dest="command", metavar="command")
+    serve = commands.add_parser(
+        "serve",
+        help="run the Kartrix server (API for the CLI, web app and VS Code extension)",
+        description="Serves the HTTP API with a live event feed per run. Each workspace's agent runs in its own "
+        "worker process. Settings: the server section of config.yaml.",
+    )
+    serve.add_argument("--host", help="address to listen on (default: server.host, 127.0.0.1)")
+    serve.add_argument("--port", type=int, help="port (default: server.port, 8765)")
+    login = commands.add_parser("login", help="sign in to a Kartrix server (or create an account with --signup)")
+    login.add_argument("--server", help="server URL (default: server.url, http://127.0.0.1:8765)")
+    login.add_argument("--email", help="account email (asked if left out)")
+    login.add_argument("--signup", action="store_true", help="create the account first")
+    commands.add_parser("logout", help="sign out of the Kartrix server and forget the token")
+    commands.add_parser("whoami", help="show the server and account the CLI uses")
+    worker = commands.add_parser("worker")  # started by the server, not listed in --help
+    worker.add_argument("--session", required=True)
+    worker.add_argument("--mcp", action="store_true")
     commands.add_parser(
         "stop",
         help="stop every Kartrix run in progress on this machine (kill switch)",
@@ -71,6 +96,19 @@ def main(argv: list[str] | None = None) -> int:
     add_eval_parser(commands)
     args = parser.parse_args(argv)
 
+    if args.command == "serve":
+        from kartrix.server.app import serve as run_server
+
+        return run_server(args.host, args.port)
+    if args.command == "worker":
+        from kartrix.server.worker import run_worker
+
+        return run_worker(args.session, args.mcp)
+    if args.command in ("login", "logout", "whoami"):
+        secrets = _ask_login(args) if args.command == "login" else None
+        if args.command == "login" and secrets is None:
+            return 1
+        return asyncio.run(_account(args, secrets))
     if args.command == "run":
         from kartrix.headless.runner import run_headless
 
@@ -94,9 +132,87 @@ def main(argv: list[str] | None = None) -> int:
         print("Every Kartrix run in progress stops at its next step; runs started from now on are not affected.")
         return 0
 
+    if not args.local:
+        from kartrix.client.api import load_credentials
+
+        creds = load_credentials()
+        if creds is not None:
+            from kartrix.client.repl import run_remote
+
+            try:
+                return asyncio.run(run_remote(creds))
+            except KeyboardInterrupt:
+                return 130
+
     from kartrix.main import run
 
     run()
+    return 0
+
+
+def _ask_login(args: argparse.Namespace) -> tuple[str, str] | None:
+    """Email and password from the terminal (before the event loop starts)."""
+    email = args.email or input("Email: ").strip()
+    password = getpass.getpass("Password: ")
+    if args.signup and getpass.getpass("Password again: ") != password:
+        print("The passwords don't match.")
+        return None
+    return email, password
+
+
+async def _account(args: argparse.Namespace, secrets: tuple[str, str] | None = None) -> int:
+    from kartrix.client.api import (
+        ApiError,
+        Credentials,
+        KartrixClient,
+        forget_credentials,
+        load_credentials,
+        save_credentials,
+    )
+
+    creds = load_credentials()
+    if args.command == "whoami":
+        if creds is None:
+            print("Not logged in — the CLI runs the agent locally. `kartrix login` to use a server.")
+            return 1
+        try:
+            async with KartrixClient(creds.server, creds.token) as client:
+                me = await client.me()
+        except ApiError as e:
+            print(f"{creds.server}: {e.detail}")
+            return 1
+        except Exception as e:
+            print(f"Can't reach {creds.server}: {e}")
+            return 1
+        print(f"{me['email']} on {creds.server}")
+        return 0
+    if args.command == "logout":
+        if creds is not None:
+            try:
+                async with KartrixClient(creds.server, creds.token) as client:
+                    await client.logout()
+            except Exception as e:  # the token is forgotten locally either way
+                print(f"The server could not revoke the token ({e}); it expires on its own.")
+        print("Logged out." if forget_credentials() or creds else "Not logged in.")
+        return 0
+
+    from kartrix.config import settings
+
+    server = (args.server or settings.server.url).rstrip("/")
+    assert secrets is not None  # noqa: S101 — asked by main() for login
+    email, password = secrets
+    try:
+        async with KartrixClient(server) as client:
+            result = await (client.signup if args.signup else client.login)(email, password)
+    except ApiError as e:
+        print(f"{'Sign-up' if args.signup else 'Login'} failed: {e.detail}")
+        return 1
+    except Exception as e:
+        print(f"Can't reach {server}: {e} — is `kartrix serve` running?")
+        return 1
+    path = save_credentials(Credentials(server, result["token"], result["user"]["email"]))
+    print(f"Logged in to {server} as {result['user']['email']} (token saved in {path}).")
+    print("`kartrix` now runs your requests on this server; `kartrix --local` runs them here.")
     return 0
 
 
