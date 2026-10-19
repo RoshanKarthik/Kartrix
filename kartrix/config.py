@@ -378,6 +378,8 @@ class LoggingSettings(_Section):
     format: Literal["json", "text"] = "json"
     # Kept quiet by default so log lines don't interleave with the interactive REPL.
     console_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "WARNING"
+    # stderr lines: auto = short human-readable lines on a terminal, `format` when piped (containers, CI).
+    console_format: Literal["auto", "human", "json", "text"] = "auto"
     file: str | None = ".kartrix/logs/kartrix.jsonl"  # null disables file logging
 
 

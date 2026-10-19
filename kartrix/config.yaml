@@ -340,4 +340,5 @@ logging:
   level: INFO                   # level for kartrix.* loggers
   format: json                  # json | text
   console_level: WARNING        # what reaches stderr (keeps the REPL clean)
+  console_format: auto          # auto: short readable lines on a terminal, `format` when piped | human | json | text
   file: .kartrix/logs/kartrix.jsonl   # null to disable file logging

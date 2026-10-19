@@ -2,7 +2,10 @@
 
 All ``kartrix.*`` loggers write one JSON object per line (or plain text when
 ``logging.format: text``) to a log file, and only WARNING+ to stderr by default
-so the interactive REPL stays readable. Third-party libraries are held at WARNING.
+so the interactive REPL stays readable. On a terminal those stderr lines are short and
+human-readable (``logging.console_format: auto``) — the full record is in the file;
+piped or in a container, stderr gets ``logging.format`` like the file.
+Third-party libraries are held at WARNING.
 
 Extra fields passed via ``logger.info("msg", extra={"session_id": sid})`` are
 included as top-level keys in the JSON record. Every formatted line — message, extras,
@@ -57,10 +60,57 @@ class RedactingFormatter(logging.Formatter):
         return redact(super().format(record))
 
 
-def _make_formatter() -> logging.Formatter:
-    if settings.logging.format == "json":
+class HumanFormatter(logging.Formatter):
+    """One short line for a person at a terminal: ``warning: Model failed; trying the next one (model: backup,
+    error: timed out)``. Extras are shortened and tracebacks reduced to the exception itself — the log file
+    keeps everything. Characters the terminal's encoding lacks become ``?`` (a cp1252 console would otherwise
+    turn the line into a logging error)."""
+
+    max_value = 120
+
+    def __init__(self, encoding: str | None = None) -> None:
+        super().__init__()
+        self.encoding = encoding
+
+    def _short(self, value: Any) -> str:
+        text = " ".join(str(value).split())
+        return text if len(text) <= self.max_value else text[: self.max_value - 3] + "..."
+
+    def format(self, record: logging.LogRecord) -> str:
+        extras = [
+            f"{key}: {self._short(value)}"
+            for key, value in vars(record).items()
+            if key not in _RESERVED_ATTRS and not key.startswith("_") and value is not None
+        ]
+        if record.exc_info and record.exc_info[1] is not None:
+            exc = record.exc_info[1]
+            extras.append(f"{type(exc).__name__}: {self._short(exc)}")
+        line = f"{record.levelname.lower()}: {record.getMessage()}"
+        if extras:
+            line += f" ({', '.join(extras)})"
+        line = redact(line)
+        if self.encoding:
+            line = line.encode(self.encoding, "replace").decode(self.encoding)
+        return line
+
+
+def _make_formatter(fmt: str, encoding: str | None = None) -> logging.Formatter:
+    if fmt == "human":
+        return HumanFormatter(encoding)
+    if fmt == "json":
         return JSONFormatter()
     return RedactingFormatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+
+
+def console_format(stream: Any = None) -> str:
+    """The stderr format: ``logging.console_format``, where ``auto`` means human-readable on a terminal and
+    ``logging.format`` otherwise (pipes, containers, CI — where a log collector reads the lines)."""
+    cfg = settings.logging
+    if cfg.console_format != "auto":
+        return cfg.console_format
+    stream = sys.stderr if stream is None else stream
+    isatty = getattr(stream, "isatty", None)
+    return "human" if callable(isatty) and isatty() else cfg.format
 
 
 def setup_logging() -> None:
@@ -71,7 +121,6 @@ def setup_logging() -> None:
     _configured = True
 
     cfg = settings.logging
-    formatter = _make_formatter()
 
     # Third-party libraries (OpenAI, httpx, ...) only surface warnings.
     logging.getLogger().setLevel(logging.WARNING)
@@ -82,14 +131,14 @@ def setup_logging() -> None:
 
     console = logging.StreamHandler(sys.stderr)
     console.setLevel(cfg.console_level)
-    console.setFormatter(formatter)
+    console.setFormatter(_make_formatter(console_format(sys.stderr), getattr(sys.stderr, "encoding", None)))
     app_logger.addHandler(console)
 
     if cfg.file:
         log_path = Path(cfg.file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(log_path, encoding="utf-8")
-        file_handler.setFormatter(formatter)
+        file_handler.setFormatter(_make_formatter(cfg.format))
         app_logger.addHandler(file_handler)
 
 

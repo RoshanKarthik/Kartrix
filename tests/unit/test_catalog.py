@@ -126,7 +126,7 @@ def test_selected_main_model_is_used_for_the_main_role_only(monkeypatch: pytest.
 
 @pytest.mark.usefixtures("reset_selection")
 def test_claude_gets_no_sampling_parameters_and_native_structured_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    from langchain.agents.structured_output import ProviderStrategy
+    from langchain.agents.structured_output import ProviderStrategy, ToolStrategy
 
     from kartrix.config import LLMModelRef
     from kartrix.llm import factory
@@ -134,9 +134,10 @@ def test_claude_gets_no_sampling_parameters_and_native_structured_output(monkeyp
     monkeypatch.setenv("ANTHROPIC_API_KEY", "placeholder-not-a-real-key")
     llm = factory._build_chat_model("anthropic", "claude-opus-5-5", temperature=0, top_p=0.5)
     assert getattr(llm, "temperature", None) is None and getattr(llm, "top_p", None) is None
-    assert factory.main_response_format(LLMModelRef) is LLMModelRef  # the default (NIM) model: LangChain decides
+    assert isinstance(factory.response_format_for(LLMModelRef), ToolStrategy)  # the default (NIM) model
     factory.select_main_model(LLMModelRef(provider="anthropic", model="claude-haiku-5-5"))
-    assert isinstance(factory.main_response_format(LLMModelRef), ProviderStrategy)
+    assert isinstance(factory.response_format_for(LLMModelRef), ProviderStrategy)
+    assert isinstance(factory.response_format_for(LLMModelRef, "router"), ToolStrategy)  # router: llm.provider
 
 
 @pytest.mark.usefixtures("configured", "reset_selection")

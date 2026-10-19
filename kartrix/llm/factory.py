@@ -136,15 +136,21 @@ def get_chat_model(role: Role = "main", **kwargs: Any) -> BaseChatModel:
     return _build_chat_model(provider, model, **kwargs)
 
 
-def main_response_format(schema: Any) -> Any:
-    """``response_format`` for an agent on the main model. Claude models get native structured output:
-    LangChain falls back to a forced tool call for models it doesn't know (e.g. Claude Haiku 5.5), and current
-    Claude models reject forced tool use (or combine it badly with their always-on thinking)."""
-    if main_model().provider == "anthropic":
-        from langchain.agents.structured_output import ProviderStrategy
+def response_format_for(schema: Any, role: Role = "main") -> Any:
+    """``response_format`` for an agent on ``role``'s model — always an explicit strategy, never a bare schema.
 
+    A bare schema lets LangChain pick per model profile, and profiles arrive with provider packages:
+    ``langchain-nvidia-ai-endpoints`` 1.5 marks gpt-oss as native-structured-output capable, and gpt-oss on
+    NIM then answers imperative requests with an empty message (it "calls a tool" in its reasoning) — the
+    router failed on every "Add …". So: Claude models get native structured output (current ones reject forced
+    tool use, or combine it badly with their always-on thinking); every other provider gets a forced tool call,
+    which they all handle."""
+    from langchain.agents.structured_output import ProviderStrategy, ToolStrategy
+
+    provider = main_model().provider if role == "main" else settings.llm.provider
+    if provider == "anthropic":
         return ProviderStrategy(schema)
-    return schema
+    return ToolStrategy(schema)
 
 
 def get_fallback_chat_models(**kwargs: Any) -> list[BaseChatModel]:

@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from kartrix.agent.factory import agent_middleware
 from kartrix.agent.graph import WORKING_RULES
 from kartrix.agent.tools import search_codebase, symbol_graph
-from kartrix.llm.factory import get_chat_model, get_model_middleware
+from kartrix.llm.factory import get_chat_model, get_model_middleware, response_format_for
 from kartrix.observability.logger import get_logger
 from kartrix.security.approvals import (
     ApprovalDecision,
@@ -129,7 +129,7 @@ async def _judge_task(task: dict, agent_output: str) -> _JudgeVerdict:
         llm,
         tools=[],
         system_prompt=_JUDGE_SYSTEM_PROMPT,
-        response_format=_JudgeVerdict,
+        response_format=response_format_for(_JudgeVerdict, "judge"),
         middleware=[*get_model_middleware(temperature=0), BudgetMiddleware()],
     )
 

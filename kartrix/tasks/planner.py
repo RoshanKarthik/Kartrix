@@ -6,7 +6,7 @@ from typing import Any
 from langchain.agents import create_agent
 from pydantic import BaseModel
 
-from kartrix.llm.factory import get_chat_model, get_model_middleware, main_response_format
+from kartrix.llm.factory import get_chat_model, get_model_middleware, response_format_for
 from kartrix.observability.logger import get_logger
 from kartrix.security.budget import BudgetMiddleware, raise_if_stopped
 from kartrix.tasks.task_store import TaskType
@@ -132,7 +132,7 @@ def create_plan(goal: str, extra_context: str = "", repo_context: str = "") -> E
         llm,
         tools=[],
         system_prompt=_SYSTEM_PROMPT,
-        response_format=main_response_format(ExecutionPlan),
+        response_format=response_format_for(ExecutionPlan),
         middleware=[*get_model_middleware(temperature=0), BudgetMiddleware()],
     )
 
