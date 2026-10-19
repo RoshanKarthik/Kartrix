@@ -3,8 +3,13 @@
 Values come from (highest priority first):
   1. environment variables prefixed ``KARTRIX_`` — nested keys use ``__``,
      e.g. ``KARTRIX_LLM__MODEL=gpt-4o`` overrides ``llm.model``
-  2. ``kartrix/config.yaml`` (or the file named by ``KARTRIX_CONFIG_FILE``)
-  3. the defaults declared on the models below
+  2. the user's own ``config.yaml`` in the user config folder (``kartrix.paths.user_config_path``), merged
+     key by key over
+  3. ``kartrix/config.yaml`` (or the file named by ``KARTRIX_CONFIG_FILE``, which then is the whole config)
+  4. the defaults declared on the models below
+
+Secrets (provider keys, DATABASE_URL) come from the environment, then a development checkout's ``.env``, then
+the user's ``keys.env`` (``kartrix keys``) — never from the repository Kartrix is working on.
 
 The YAML is loaded strictly: duplicate keys and unknown keys are errors, so a
 typo or a copy-pasted section can no longer silently override another one.
@@ -25,11 +30,15 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from kartrix.paths import user_config_path
+
 PROJECT_ROOT = Path(__file__).parent.parent
 DEFAULT_CONFIG_FILE = Path(__file__).parent / "config.yaml"
 
-# Load .env before settings are built so KARTRIX_* overrides placed there apply.
+# Secrets and KARTRIX_* overrides, before settings are built. load_dotenv never overrides a variable that is
+# already set, so the real environment wins, then a development checkout's .env, then the user's keys file.
 load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv(user_config_path() / "keys.env")
 
 
 class ConfigError(Exception):
@@ -414,6 +423,17 @@ class _UniqueKeyLoader(yaml.SafeLoader):
         return super().construct_mapping(node, deep=deep)
 
 
+def merge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """``override`` over ``base``, section by section: nested mappings merge, anything else replaces."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = merge_config(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def load_yaml_strict(path: Path) -> dict[str, Any]:
     """Parse a YAML file, failing on duplicate keys or a non-mapping document."""
     try:
@@ -495,8 +515,12 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        config_file = Path(os.environ.get("KARTRIX_CONFIG_FILE", DEFAULT_CONFIG_FILE))
-        yaml_settings = InitSettingsSource(settings_cls, init_kwargs=load_yaml_strict(config_file))
+        explicit = os.environ.get("KARTRIX_CONFIG_FILE")
+        data = load_yaml_strict(Path(explicit) if explicit else DEFAULT_CONFIG_FILE)
+        user_file = user_config_path() / "config.yaml"
+        if not explicit and user_file.is_file():
+            data = merge_config(data, load_yaml_strict(user_file))
+        yaml_settings = InitSettingsSource(settings_cls, init_kwargs=data)
         return init_settings, env_settings, yaml_settings
 
 

@@ -48,7 +48,7 @@ Changed 2 file(s) — /undo reverts them
 
 ## Contents
 
-- [Architecture](#architecture) · [Quick start](#quick-start) · [Using it](#using-it) · [Security model](#security-model)
+- [Architecture](#architecture) · [Install](#install) · [Quick start](#quick-start) · [Using it](#using-it) · [Security model](#security-model)
 - [Measured results](#measured-results) · [Evals](#evals) · [Observability](#observability) · [Development](#development)
 
 ## Architecture
@@ -93,20 +93,52 @@ flowchart LR
 | Reliability | fallback chain with a circuit breaker, empty/cut-off turn recovery, tool errors returned to the model, honest run status | `llm/fallback.py`, `agent/reliability.py` |
 | Safety | workspace jail, command policy + 3 permission modes, human approvals (LangGraph interrupts), OS sandbox, secret redaction, prompt-injection guard, MCP pinning, append-only audit, budgets, kill switch, `/undo` | `kartrix/security/`, `kartrix/sandbox/` |
 
-## Quick start
+## Install
 
-Needs Python 3.12, [uv](https://docs.astral.sh/uv/), Docker (Postgres + pgvector, Redis) and a free
-[NVIDIA NIM](https://build.nvidia.com) API key.
+One command; no Docker, no database setup, no Python install needed (the installer brings
+[uv](https://docs.astral.sh/uv/), which brings its own Python 3.12).
 
-```bash
-uv sync
-cp .env.example .env          # NVIDIA_API_KEY=..., Postgres/Redis passwords (HF_TOKEN optional fallback)
-docker compose up -d          # Postgres 17 + pgvector, Redis 8 — bound to 127.0.0.1
-uv run alembic upgrade head
-cd path/to/your/project && uv run --project path/to/kartrix kartrix
+Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/RoshanKarthik/Kartrix/main/scripts/install.ps1 | iex"
 ```
 
-The prompt appears in about half a second; the core and the index start in the background.
+macOS / Linux:
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/RoshanKarthik/Kartrix/main/scripts/install.sh | sh
+```
+
+Already use uv? `uv tool install --python 3.12 git+https://github.com/RoshanKarthik/Kartrix` does the same.
+
+## Quick start
+
+Open a new terminal, go to any repository and run:
+
+```bash
+kartrix
+```
+
+The first time, Kartrix asks for a free [NVIDIA NIM](https://build.nvidia.com) key (saved once, for every repo) and
+sets up its built-in database (PostgreSQL + pgvector, on your machine, password-protected; about 20 s the first
+time, a few seconds after). It then indexes the repository in the background; the prompt is ready at once.
+
+```bash
+kartrix doctor               # is everything in place? (keys, database, sandbox, git, disk) — with fixes
+kartrix keys                 # your provider keys; `kartrix keys set GROQ_API_KEY` adds a free extra
+kartrix models               # the models you can pick; /model <id> switches in a session
+kartrix update               # latest version
+kartrix uninstall            # remove Kartrix (asks before deleting your data)
+```
+
+Where things live: keys and an optional `config.yaml` (merged over the built-in settings) in your user config
+folder; the database, undo checkpoints and caches in your user data folder (`%LOCALAPPDATA%\kartrix` on Windows,
+`~/Library/Application Support/kartrix` on macOS, `~/.local/share/kartrix` on Linux). `KARTRIX_HOME` puts everything
+under one folder instead (e.g. on a bigger drive). Nothing is read from the repositories you work in except the code.
+
+Optional: `DATABASE_URL` to use your own Postgres (with pgvector) instead of the built-in one, `REDIS_URL` for the
+answer cache. On Linux, install `bubblewrap` so commands run sandboxed (`kartrix doctor` tells you).
 
 ## Using it
 
@@ -227,16 +259,25 @@ also traced to LangSmith (`tracing.langsmith: off` disables it) — that sends p
 
 ## Development
 
+From a checkout (Docker Postgres + Redis are optional here too — without `DATABASE_URL` the built-in database is used):
+
+```bash
+uv sync
+cp .env.example .env                                      # keys; DATABASE_URL/REDIS_URL if you use Docker
+docker compose up -d                                      # optional: Postgres 17 + pgvector, Redis 8 on 127.0.0.1
+cd path/to/your/project && uv run --project path/to/kartrix kartrix
+```
+
 ```bash
 git config core.hooksPath .githooks                       # once per clone: lint + types before each commit
 uv run ruff check . && uv run ruff format --check .       # lint + formatting
 uv run mypy                                               # type-check
-uv run pytest                                             # 660+ tests; DB tests need `docker compose up -d`
+uv run pytest                                             # 700+ tests; DB tests need `docker compose up -d`
 ```
 
 Tests use a separate `<db>_test` database (created and migrated automatically), scripted fake models and a fake
 embedder — no test calls an LLM API. Configuration: `kartrix/config.yaml`, every key overridable with
-`KARTRIX_<SECTION>__<KEY>`; secrets only in `.env`.
+`KARTRIX_<SECTION>__<KEY>`; secrets only in `.env` (development) or the user's keys file.
 
 ## Limitations and next steps
 

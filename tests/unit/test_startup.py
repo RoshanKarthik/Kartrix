@@ -127,11 +127,17 @@ def test_fallback_models_are_built_on_first_use(monkeypatch: pytest.MonkeyPatch)
     assert lazy.models is lazy.models and len(built) == len(factory.settings.llm.fallbacks)  # built once
 
 
-def test_missing_fallback_key_still_fails_at_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fallbacks_without_a_key_are_left_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fresh install with only the required key must start: fallbacks whose key is missing are skipped."""
     from kartrix.llm import factory
 
     if not any(fb.provider == "huggingface" for fb in factory.settings.llm.fallbacks):
         pytest.skip("no Hugging Face fallback configured")
+    built: list[str] = []
+    monkeypatch.setattr(factory, "_build_chat_model", lambda provider, model, **kw: built.append(provider) or model)
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    with pytest.raises(factory.ProviderConfigError, match="HF_TOKEN"):
-        factory.get_model_middleware()
+    middleware = factory.get_model_middleware()  # no ProviderConfigError
+    lazy = next(m for m in middleware if isinstance(m, factory.LazyModelFallbackMiddleware))
+    assert lazy.models and "huggingface" not in built
+    monkeypatch.setenv("HF_TOKEN", "placeholder-not-a-real-key")
+    assert any(fb.provider == "huggingface" for fb in factory.available_fallbacks())

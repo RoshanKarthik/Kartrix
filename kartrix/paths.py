@@ -20,6 +20,19 @@ def _home() -> Path | None:
     return Path(value) if value else None
 
 
+def user_config_path() -> Path:
+    """Where the user's own settings live — provider keys (``keys.env``, see ``kartrix keys``) and an optional
+    ``config.yaml`` merged over the built-in one. Not created here: reading it must have no side effects."""
+    home = _home()
+    return home / "config" if home else Path(platformdirs.user_config_dir(_APP, appauthor=False))
+
+
+def user_config_dir() -> Path:
+    path = user_config_path()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def user_data_dir() -> Path:
     """Settings and state that must survive (e.g. trusted skills, connected MCP servers)."""
     home = _home()

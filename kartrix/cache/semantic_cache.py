@@ -167,6 +167,9 @@ async def build_semantic_cache() -> SemanticCache | None:
     if not cache_settings.enabled:
         logger.info("Semantic cache: disabled (semantic_cache.enabled is false in config.yaml)")
         return None
+    if not os.environ.get("REDIS_URL", "").strip():  # optional: no Redis is a normal setup, not a warning
+        logger.info("Semantic cache: disabled (REDIS_URL is not set)")
+        return None
 
     try:
         dims = settings.embeddings.dims

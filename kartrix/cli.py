@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
+import os
 import sys
 from datetime import datetime
 
@@ -56,6 +57,18 @@ def main(argv: list[str] | None = None) -> int:
     login.add_argument("--signup", action="store_true", help="create the account first")
     commands.add_parser("logout", help="sign out of the Kartrix server and forget the token")
     commands.add_parser("whoami", help="show the server and account the CLI uses")
+    keys_parser = commands.add_parser(
+        "keys",
+        help="show, add or remove your model provider keys (saved once for every repo)",
+        description="Keys are kept in your user config folder (owner-only). `set` asks for the value (hidden), or "
+        "reads it from stdin when piped, and checks it with the provider.",
+    )
+    keys_parser.add_argument("action", nargs="?", choices=["list", "set", "remove"], default="list")
+    keys_parser.add_argument("name", nargs="?", help="e.g. NVIDIA_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY")
+    commands.add_parser("update", help="update Kartrix to the latest version")
+    commands.add_parser("uninstall", help="remove Kartrix (asks whether to delete your data too)")
+    doctor = commands.add_parser("doctor", help="check that everything Kartrix needs is in place, with fixes")
+    doctor.add_argument("--offline", action="store_true", help="don't check the keys with the providers")
     commands.add_parser(
         "models",
         help="list the models you can pick, their tiers and prices",
@@ -120,6 +133,16 @@ def main(argv: list[str] | None = None) -> int:
         from kartrix.server.worker import run_worker
 
         return run_worker(args.session, args.mcp, args.model)
+    if args.command == "keys":
+        return _keys(args.action, args.name)
+    if args.command in ("update", "uninstall"):
+        from kartrix import lifecycle
+
+        return lifecycle.update() if args.command == "update" else lifecycle.uninstall()
+    if args.command == "doctor":
+        from kartrix.doctor import run_doctor
+
+        return run_doctor(online=not args.offline)
     if args.command == "admin":
         return _admin(args)
     if args.command == "models":
@@ -130,6 +153,10 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return asyncio.run(_account(args, secrets))
     if args.command == "run":
+        from kartrix.keys import first_run
+
+        if not first_run():
+            return 3
         from kartrix.headless.runner import run_headless
 
         return run_headless(args.spec, args.report, args.events, args.quiet)
@@ -164,9 +191,56 @@ def main(argv: list[str] | None = None) -> int:
             except KeyboardInterrupt:
                 return 130
 
+    from kartrix.keys import first_run
+
+    if not first_run():
+        return 1
     from kartrix.main import run
 
     run(args.model)
+    return 0
+
+
+def _keys(action: str, name: str | None) -> int:
+    from kartrix import keys
+
+    if action == "list":
+        saved = keys.read()
+        print(f"Keys file: {keys.keys_file()}")
+        for info in keys.KNOWN:
+            value = os.environ.get(info.name, "").strip()
+            where = "" if not value else (" (keys file)" if saved.get(info.name) == value else " (environment / .env)")
+            state = keys.mask(value) + where if value else ("MISSING - required" if info.required else "not set")
+            print(f"  {info.name:<20} {state}")
+            if not value:
+                print(f"  {'':<20} free: {info.where}")
+        return 0
+    if not name:
+        print(f"kartrix keys {action}: name the key, e.g. kartrix keys {action} GROQ_API_KEY")
+        return 2
+    if action == "remove":
+        if keys.remove(name):
+            print(f"Removed {name.upper()} from {keys.keys_file()}.")
+            return 0
+        print(f"{name.upper()} is not in {keys.keys_file()}.")
+        return 1
+    about = keys.known(name)
+    if about is not None:
+        print(f"{about.provider}: {about.where}")
+    value = sys.stdin.readline().strip() if not sys.stdin.isatty() else getpass.getpass(f"{name.upper()} (hidden): ")
+    if not value.strip():
+        print("Nothing entered; nothing changed.")
+        return 1
+    ok, why = keys.validate(name, value)
+    if ok is False:
+        print(f"Not saved: {why}.")
+        return 1
+    try:
+        keys.save(name, value)
+    except ValueError as e:
+        print(f"Not saved: {e}.")
+        return 1
+    print(f"Saved {name.upper()} in {keys.keys_file()}" + ("." if ok else f" (not checked: {why})."))
     return 0
 
 

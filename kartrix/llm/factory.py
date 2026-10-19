@@ -50,7 +50,7 @@ class ProviderConfigError(RuntimeError):
 def _require_env(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
-        raise ProviderConfigError(f"{name} is not set — add it to .env (see .env.example)")
+        raise ProviderConfigError(f"{name} is not set — run `kartrix keys set {name}` (or add it to .env)")
     return value
 
 
@@ -184,6 +184,20 @@ class LazyModelFallbackMiddleware(ModelFallbackMiddleware):
         return await acall_chain(request, handler, lambda: self.models)
 
 
+def available_fallbacks() -> list[LLMModelRef]:
+    """The configured fallback models whose provider key is set. The others are left out of the chain (logged once
+    per call) — a fresh install with only the required key must start, and a model without its key could never
+    answer anyway."""
+    usable = []
+    for fb in settings.llm.fallbacks:
+        key = _PROVIDER_KEYS.get(fb.provider)
+        if key is None or os.environ.get(key, "").strip():
+            usable.append(fb)
+        else:
+            logger.info("Fallback model skipped: no key", extra={"model": fb.model, "key": key})
+    return usable
+
+
 def get_model_middleware(**kwargs: Any) -> list[AgentMiddleware]:
     """Middleware for ``create_agent``: fallback (outer) around retry (inner).
 
@@ -191,10 +205,7 @@ def get_model_middleware(**kwargs: Any) -> list[AgentMiddleware]:
     with backoff first, then each fallback model in turn gets the same retry budget.
     """
     middleware: list[AgentMiddleware] = []
-    fallbacks = settings.llm.fallbacks
-    for fb in fallbacks:  # a missing key still fails at startup, not at the first fallback
-        if fb.provider in _PROVIDER_KEYS:
-            _require_env(_PROVIDER_KEYS[fb.provider])
+    fallbacks = available_fallbacks()
     # Always added: the circuit breaker and the clear error also matter without fallbacks.
     middleware.append(
         LazyModelFallbackMiddleware(

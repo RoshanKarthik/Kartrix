@@ -327,8 +327,9 @@ def print_help() -> None:
 
 
 async def dispatch(core: CoreSession, user_input: str) -> None:
-    """Run one REPL command (anything but /exit and /help, which work before startup finishes)."""
-    if user_input.startswith("/ask "):
+    """Run one REPL command (anything but /exit and /help, which work before startup finishes). Text that isn't a
+    command is a request — the same as ``/ask``."""
+    if user_input.startswith("/ask ") or not user_input.startswith("/"):
         question = user_input.removeprefix("/ask ").strip()
         logger.info(f"Ask command received: {question}")
         await core.ask(question)

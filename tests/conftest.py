@@ -33,6 +33,12 @@ TEST_DATABASE_URL = _env.get("TEST_DATABASE_URL") or (
 )
 if TEST_DATABASE_URL:
     os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+# The user's own Kartrix folders (keys.env, config.yaml, trusted skills, the built-in database) never leak into or
+# get touched by the tests.
+if "KARTRIX_HOME" not in os.environ:
+    import tempfile
+
+    os.environ["KARTRIX_HOME"] = tempfile.mkdtemp(prefix="kartrix-tests-")
 
 from tests.fakes import FakeSandbox, HashingEmbeddings  # noqa: E402 — after DATABASE_URL is set
 from tests.helpers import unavailable  # noqa: E402
