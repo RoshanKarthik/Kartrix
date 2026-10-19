@@ -33,6 +33,12 @@ logger = get_logger(__name__)
 warnings.filterwarnings("ignore", message=r"Found .* in available_models, but type is unknown", category=UserWarning)
 
 HF_ROUTER_URL = "https://router.huggingface.co/v1"
+# Providers reached through their OpenAI-compatible endpoints: base URL and the env var with the key.
+OPENAI_COMPATIBLE = {
+    "groq": ("https://api.groq.com/openai/v1", "GROQ_API_KEY"),
+    "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
+}
 
 Role = Literal["main", "judge", "router"]
 
@@ -89,6 +95,20 @@ def _build_chat_model(provider: str, model: str, **kwargs: Any) -> BaseChatModel
             api_key=_require_env("HF_TOKEN"),
             timeout=timeout,
             max_retries=0,
+            **kwargs,
+        )
+    if provider in OPENAI_COMPATIBLE:
+        from langchain_openai import ChatOpenAI
+
+        base_url, key = OPENAI_COMPATIBLE[provider]
+        headers = {"X-Title": "Kartrix"} if provider == "openrouter" else None  # app name in OpenRouter's logs
+        return ChatOpenAI(
+            model=model,
+            base_url=base_url,
+            api_key=_require_env(key),
+            timeout=timeout,
+            max_retries=0,
+            default_headers=headers,
             **kwargs,
         )
     if provider == "openai":

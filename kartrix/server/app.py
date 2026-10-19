@@ -141,6 +141,7 @@ class ModelOut(BaseModel):
     tier: str
     description: str
     context_tokens: int | None
+    trains_on_inputs: bool
     default: bool
     available: bool
     unavailable_reason: str | None

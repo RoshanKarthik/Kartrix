@@ -161,3 +161,34 @@ def test_headless_spec_takes_a_model(tmp_path: Any) -> None:
     path = tmp_path / "spec.yaml"
     path.write_text("task: fix it\nmodel: gemma-4-31b\n", encoding="utf-8")
     assert load_spec(path).model == "gemma-4-31b"
+
+
+# ── free-tier providers (OpenAI-compatible endpoints) ─────────────────
+
+
+@pytest.mark.parametrize(
+    ("provider", "host"),
+    [
+        ("groq", "api.groq.com"),
+        ("openrouter", "openrouter.ai"),
+        ("gemini", "generativelanguage.googleapis.com"),
+    ],
+)
+def test_openai_compatible_providers(provider: str, host: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    from kartrix.llm import factory
+
+    llm = factory._build_chat_model(provider, "some/model", temperature=0)
+    assert host in str(llm.openai_api_base)  # type: ignore[attr-defined]
+    assert llm.model_name == "some/model"  # type: ignore[attr-defined]
+    monkeypatch.delenv(catalog.PROVIDER_KEYS[provider])
+    with pytest.raises(factory.ProviderConfigError, match=catalog.PROVIDER_KEYS[provider]):
+        factory._build_chat_model(provider, "some/model")
+
+
+def test_shipped_free_models_are_flagged_and_free() -> None:
+    by_id = {m.id: m for m in catalog.list_models()}
+    for model_id in ("groq-gpt-oss-120b", "gemini-2.5-flash", "nemotron-ultra-free", "laguna-s-free"):
+        assert by_id[model_id].price_input == 0 and by_id[model_id].price_output == 0
+    assert by_id["gemini-2.5-flash"].trains_on_inputs
+    assert not by_id["groq-gpt-oss-120b"].trains_on_inputs
+    assert all(m.model.endswith(":free") for m in by_id.values() if m.provider == "openrouter")  # never a paid model

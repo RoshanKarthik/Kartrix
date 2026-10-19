@@ -62,7 +62,7 @@ def _no_langsmith(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def _placeholder_api_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     """Models are built but never called: placeholder keys, so tests pass without a .env and can't use real ones."""
-    for name in ("NVIDIA_API_KEY", "HF_TOKEN"):
+    for name in ("NVIDIA_API_KEY", "HF_TOKEN", "GROQ_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY"):
         monkeypatch.setenv(name, "placeholder-not-a-real-key")
 
 

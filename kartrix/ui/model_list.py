@@ -42,7 +42,13 @@ def render_catalog(console: Console, data: dict[str, Any], source: str, current:
         reason = model["unavailable_reason"] or "unavailable"
         status = "[green]available[/green]" if model["available"] else f"[dim]{escape(reason)}[/dim]"
         name = escape(model["name"]) + (" [bold](default)[/bold]" if model["default"] else "")
+        if model.get("trains_on_inputs"):
+            name += " [yellow]*[/yellow]"
         if model["id"] == current:
-            name = "[bold green]▶[/bold green] " + name
+            name = "[bold green]>[/bold green] " + name
         table.add_row(escape(model["id"]), name, escape(tier["name"]), _price(model), status)
     console.print(table)
+    if any(m.get("trains_on_inputs") for m in data.get("models", [])):
+        console.print(
+            "[yellow]*[/yellow] [dim]free tier: the provider may use your prompts (and the code in them) to train models[/dim]"
+        )

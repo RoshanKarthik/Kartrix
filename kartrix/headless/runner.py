@@ -53,7 +53,7 @@ def _limits(spec: RunSpec) -> Any:
 
 
 def build_report(spec: RunSpec, spec_path: str, outcome: Any, events: list[Any], started: float) -> dict[str, Any]:
-    from kartrix.config import settings
+    from kartrix.llm.factory import main_model
     from kartrix.sandbox.manager import get_sandbox
 
     calls = [e for e in events if e.type == "tool_call_finished"]
@@ -75,7 +75,7 @@ def build_report(spec: RunSpec, spec_path: str, outcome: Any, events: list[Any],
         "started_at": datetime.fromtimestamp(started, UTC).isoformat(),
         "duration_s": round(time.time() - started, 2),
         "workspace": str(Path.cwd()),
-        "model": f"{settings.llm.provider}/{settings.llm.model}",
+        "model": f"{main_model().provider}/{main_model().model}",  # the main model the run used
         "sandbox": (sb.name if (sb := get_sandbox()) else None),
         "budget": _limits(spec).model_dump(),
         "startup": getattr(outcome, "startup", None) or {},

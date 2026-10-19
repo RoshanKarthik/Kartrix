@@ -69,7 +69,7 @@ class SemanticCacheSettings(_Section):
     ttl: int = Field(86400, gt=0)
 
 
-LLMProvider = Literal["nvidia", "huggingface", "openai", "anthropic"]
+LLMProvider = Literal["nvidia", "huggingface", "openai", "anthropic", "groq", "openrouter", "gemini"]
 
 
 class LLMModelRef(_Section):
@@ -125,6 +125,8 @@ class CatalogModel(_Section):
     tier: str
     description: str = ""
     context_tokens: int | None = Field(None, gt=0)
+    # The provider may use prompts sent on its free tier to train models; shown to users before they pick it.
+    trains_on_inputs: bool = False
 
 
 class ModelsSettings(_Section):

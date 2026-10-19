@@ -23,6 +23,9 @@ PROVIDER_KEYS = {
     "huggingface": "HF_TOKEN",
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "gemini": "GEMINI_API_KEY",
 }
 _DEFAULT_TIER = ModelTier(name="Default")
 
@@ -36,6 +39,7 @@ class ModelInfo:
     tier: str
     description: str
     context_tokens: int | None
+    trains_on_inputs: bool
     default: bool
     available: bool
     unavailable_reason: str | None
@@ -95,6 +99,7 @@ def list_models(*, on_server: bool = False) -> list[ModelInfo]:
                 tier=entry.tier,
                 description=entry.description,
                 context_tokens=entry.context_tokens,
+                trains_on_inputs=entry.trains_on_inputs,
                 default=entry.id == default_id,
                 available=available,
                 unavailable_reason=reason,
