@@ -120,6 +120,37 @@ class PlanReviewIn(BaseModel):
     feedback: str = Field("", max_length=10_000)
 
 
+class TierOut(BaseModel):
+    id: str
+    name: str
+    description: str
+    runs_per_day: int | None
+    tokens_per_day: int | None
+    cost_usd_per_day: float | None
+    own_key: bool
+
+
+class ModelOut(BaseModel):
+    id: str
+    name: str
+    provider: str
+    model: str
+    tier: str
+    description: str
+    context_tokens: int | None
+    default: bool
+    available: bool
+    unavailable_reason: str | None
+    price_input: float | None  # USD per million tokens
+    price_output: float | None
+
+
+class CatalogOut(BaseModel):
+    default: str
+    tiers: list[TierOut]
+    models: list[ModelOut]
+
+
 class ServerInfo(BaseModel):
     name: str = "kartrix"
     allow_signup: bool
@@ -254,6 +285,20 @@ def _routes() -> Any:
     async def health() -> ServerInfo:
         return ServerInfo(
             allow_signup=settings.server.allow_signup, allow_local_paths=settings.server.allow_local_paths
+        )
+
+    @r.get("/models")
+    async def models(user: auth.CurrentUser) -> CatalogOut:
+        """The model catalog. On a hosted server (no local folders) the server's own provider keys never
+        make a bring-your-own-key model available."""
+        from dataclasses import asdict
+
+        from kartrix.llm import catalog
+
+        listed = catalog.list_models(on_server=not settings.server.allow_local_paths)
+        tier_list = [TierOut(id=key, **tier.model_dump()) for key, tier in catalog.tiers().items()]
+        return CatalogOut(
+            default=catalog.default_entry().id, tiers=tier_list, models=[ModelOut(**asdict(m)) for m in listed]
         )
 
     # ── accounts ──

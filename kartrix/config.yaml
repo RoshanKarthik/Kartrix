@@ -34,6 +34,70 @@ llm:
     - provider: huggingface     # via the OpenAI-compatible HF router (monthly free credits)
       model: Qwen/Qwen3-Coder-30B-A3B-Instruct
 
+models:                         # the model picker (`kartrix models`, GET /v1/models); llm.model must be listed
+  tiers:                        # usage limits per tier are enforced from roadmap 2.4 (null = no limit)
+    powerful:
+      name: Powerful
+      description: Strongest models for multi-step changes and new projects.
+      runs_per_day: 20
+    optimized:
+      name: Optimized
+      description: Fast, capable models for everyday questions and small changes.
+      runs_per_day: 50
+    promotional:
+      name: Promotional
+      description: Models on limited free credits.
+      runs_per_day: 5
+    unlimited:
+      name: Unlimited
+      description: Light models with no daily limit.
+    own_key:
+      name: Your API key
+      description: Billed to your own provider account; no Kartrix limits.
+      own_key: true
+  catalog:
+    - id: nemotron-super
+      name: Nemotron 3 Super 120B
+      provider: nvidia
+      model: nvidia/nemotron-3-super-120b-a12b
+      tier: powerful
+      description: Default. Reasoning model on NVIDIA NIM.
+    - id: gemma-4-31b
+      name: Gemma 4 31B
+      provider: nvidia
+      model: google/gemma-4-31b-it
+      tier: optimized
+    - id: gpt-oss-20b
+      name: gpt-oss 20B
+      provider: nvidia
+      model: openai/gpt-oss-20b
+      tier: unlimited
+      description: Small and fast; also routes requests.
+    - id: qwen3-coder-30b
+      name: Qwen3 Coder 30B
+      provider: huggingface
+      model: Qwen/Qwen3-Coder-30B-A3B-Instruct
+      tier: promotional
+      description: Coding model on Hugging Face monthly free credits.
+    - id: claude-opus-5-5
+      name: Claude Opus 5.5
+      provider: anthropic
+      model: claude-opus-5-5
+      tier: own_key
+      context_tokens: 1000000
+    - id: claude-sonnet-5-5
+      name: Claude Sonnet 5.5
+      provider: anthropic
+      model: claude-sonnet-5-5
+      tier: own_key
+      context_tokens: 1000000
+    - id: claude-haiku-5-5
+      name: Claude Haiku 5.5
+      provider: anthropic
+      model: claude-haiku-5-5
+      tier: own_key
+      context_tokens: 1000000
+
 skills:
   skills_dir: .kartrix/skills
 
@@ -132,6 +196,9 @@ budgets:                        # a run stops at the next model/tool call once a
     openai/gpt-oss-20b: {input: 0, output: 0}
     google/gemma-4-31b-it: {input: 0, output: 0}
     Qwen/Qwen3-Coder-30B-A3B-Instruct: {input: 0, output: 0}   # Hugging Face monthly free credits
+    claude-opus-5-5: {input: 4.0, output: 20.0}                # Anthropic API list prices (2026-10)
+    claude-sonnet-5-5: {input: 2.0, output: 10.0}
+    claude-haiku-5-5: {input: 0.10, output: 0.50}              # prompts up to 100K tokens
 
 checkpoints:                    # snapshot before every turn and /plan task, for /undo (needs git on PATH)
   enabled: true

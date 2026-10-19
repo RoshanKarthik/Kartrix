@@ -126,6 +126,10 @@ class KartrixClient:
         result: dict[str, Any] = await self._call("GET", "/me")
         return result
 
+    async def models(self) -> dict[str, Any]:
+        result: dict[str, Any] = await self._call("GET", "/models")
+        return result
+
     # workspaces
     async def workspaces(self) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = await self._call("GET", "/workspaces")

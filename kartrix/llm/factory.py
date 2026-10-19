@@ -20,6 +20,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 
 from kartrix.config import settings
+from kartrix.llm.catalog import PROVIDER_KEYS as _PROVIDER_KEYS
 from kartrix.llm.fallback import acall_chain, call_chain
 from kartrix.llm.model_retry import RateAwareRetryMiddleware
 from kartrix.llm.retry import RetryingEmbeddings
@@ -85,10 +86,6 @@ def get_chat_model(role: Role = "main", **kwargs: Any) -> BaseChatModel:
     model = {"judge": cfg.effective_judge_model, "router": cfg.effective_router_model}.get(role, cfg.model)
     logger.info("Using LLM", extra={"role": role, "provider": cfg.provider, "model": model})
     return _build_chat_model(cfg.provider, model, **kwargs)
-
-
-_PROVIDER_KEYS = {"nvidia": "NVIDIA_API_KEY", "huggingface": "HF_TOKEN", "openai": "OPENAI_API_KEY",
-                  "anthropic": "ANTHROPIC_API_KEY"}  # fmt: skip
 
 
 def get_fallback_chat_models(**kwargs: Any) -> list[BaseChatModel]:

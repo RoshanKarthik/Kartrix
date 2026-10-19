@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     InitSettingsSource,
@@ -102,6 +102,47 @@ class LLMSettings(_Section):
     @property
     def effective_router_model(self) -> str:
         return self.router_model or self.effective_judge_model
+
+
+class ModelTier(_Section):
+    """A group of catalog models with the same usage limits (enforced from roadmap 2.4; None = no limit)."""
+
+    name: str  # shown in the model picker, e.g. "Powerful"
+    description: str = ""
+    runs_per_day: int | None = Field(None, gt=0)
+    tokens_per_day: int | None = Field(None, gt=0)
+    cost_usd_per_day: float | None = Field(None, ge=0)
+    own_key: bool = False  # the user brings the provider key (roadmap 2.3); no server limits apply
+
+
+class CatalogModel(_Section):
+    """A model users can pick. The server's default is the entry matching ``llm.provider`` / ``llm.model``."""
+
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")  # stable id clients send
+    name: str
+    provider: LLMProvider
+    model: str
+    tier: str
+    description: str = ""
+    context_tokens: int | None = Field(None, gt=0)
+
+
+class ModelsSettings(_Section):
+    """The model catalog (kartrix/llm/catalog.py). Empty: the one configured ``llm`` model."""
+
+    tiers: dict[str, ModelTier] = Field(default_factory=dict)
+    catalog: list[CatalogModel] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "ModelsSettings":
+        seen: set[str] = set()
+        for entry in self.catalog:
+            if entry.id in seen:
+                raise ValueError(f"models.catalog: duplicate id {entry.id!r}")
+            seen.add(entry.id)
+            if entry.tier not in self.tiers:
+                raise ValueError(f"models.catalog: {entry.id!r} has unknown tier {entry.tier!r}")
+        return self
 
 
 class SkillsSettings(_Section):
@@ -428,6 +469,17 @@ class Settings(BaseSettings):
     logging: LoggingSettings = LoggingSettings()
     tracing: TracingSettings = TracingSettings()
     server: ServerSettings = ServerSettings()
+    models: ModelsSettings = ModelsSettings()
+
+    @model_validator(mode="after")
+    def _default_model_in_catalog(self) -> "Settings":
+        catalog = self.models.catalog
+        if catalog and not any(m.provider == self.llm.provider and m.model == self.llm.model for m in catalog):
+            raise ValueError(
+                f"models.catalog has no entry for the default model llm.provider/llm.model "
+                f"({self.llm.provider} / {self.llm.model})"
+            )
+        return self
 
     @classmethod
     def settings_customise_sources(

@@ -55,6 +55,12 @@ def main(argv: list[str] | None = None) -> int:
     login.add_argument("--signup", action="store_true", help="create the account first")
     commands.add_parser("logout", help="sign out of the Kartrix server and forget the token")
     commands.add_parser("whoami", help="show the server and account the CLI uses")
+    commands.add_parser(
+        "models",
+        help="list the models you can pick, their tiers and prices",
+        description="Shows the model catalog: from the Kartrix server after `kartrix login` (unless --local), "
+        "else this install's config.",
+    )
     worker = commands.add_parser("worker")  # started by the server, not listed in --help
     worker.add_argument("--session", required=True)
     worker.add_argument("--mcp", action="store_true")
@@ -104,6 +110,8 @@ def main(argv: list[str] | None = None) -> int:
         from kartrix.server.worker import run_worker
 
         return run_worker(args.session, args.mcp)
+    if args.command == "models":
+        return asyncio.run(_models(args.local))
     if args.command in ("login", "logout", "whoami"):
         secrets = _ask_login(args) if args.command == "login" else None
         if args.command == "login" and secrets is None:
@@ -147,6 +155,27 @@ def main(argv: list[str] | None = None) -> int:
     from kartrix.main import run
 
     run()
+    return 0
+
+
+async def _models(local: bool) -> int:
+    from rich.console import Console
+
+    from kartrix.client.api import KartrixClient, load_credentials
+    from kartrix.ui.model_list import local_catalog, render_catalog
+
+    console = Console()
+    creds = None if local else load_credentials()
+    if creds is None:
+        render_catalog(console, local_catalog(), "this install")
+        return 0
+    try:
+        async with KartrixClient(creds.server, creds.token) as client:
+            data = await client.models()
+    except Exception as e:
+        console.print(f"[red]Can't list the models of {creds.server}: {e}[/red]")
+        return 1
+    render_catalog(console, data, creds.server)
     return 0
 
 

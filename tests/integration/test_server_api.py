@@ -295,3 +295,18 @@ async def test_user_memories_are_per_user(fake_embedder: Any, monkeypatch: pytes
     assert not await long_term.forget(memory_id)
     monkeypatch.delenv("KARTRIX_USER_ID")
     assert await long_term.list_memories(tmp_path) == []  # the local CLI doesn't see account memories either
+
+
+async def test_model_catalog(server: tuple[FakePool, httpx.AsyncClient], monkeypatch: pytest.MonkeyPatch) -> None:
+    _, http = server
+    assert (await http.get("/models")).status_code == 401
+    ada = await _signup(http, "ada@example.com")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "operator-key")
+    data = (await http.get("/models", headers=ada)).json()
+    assert data["models"][0]["default"] and data["models"][0]["id"] == data["default"]
+    assert {t["id"] for t in data["tiers"]} >= {m["tier"] for m in data["models"]}
+    own_key = [m for m in data["models"] if m["tier"] == "own_key"]
+    assert own_key and all(m["available"] for m in own_key)  # a local server: the key is the user's own
+    monkeypatch.setattr(settings.server, "allow_local_paths", False)  # hosted
+    data = (await http.get("/models", headers=ada)).json()
+    assert not any(m["available"] for m in data["models"] if m["tier"] == "own_key")
