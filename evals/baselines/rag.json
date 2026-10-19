@@ -898,7 +898,6 @@
             "docs/PROGRESS.md",
             "kartrix/security/permissions.py",
             "kartrix/ui/commands.py",
-            "CLAUDE.md",
             "kartrix/security/command_policy.py",
             "docs/ROADMAP.md",
             "kartrix/cli.py",
@@ -2637,7 +2636,6 @@
             "tests/unit/test_budget.py",
             "kartrix/ui/commands.py",
             "kartrix/tools/terminal_tools.py",
-            "CLAUDE.md",
             "kartrix/tools/process_runner.py",
             "kartrix/security/budget.py"
           ],
@@ -3849,7 +3847,6 @@
             "kartrix/mcp/binaries.py",
             "kartrix/cli.py",
             "migrations/versions/2026_10_06_1920-faaa983951ae_baseline_core_tables.py",
-            "CLAUDE.md",
             "docs/ROADMAP.md",
             "tests/fake_mcp_server.py"
           ],
@@ -4909,7 +4906,6 @@
             "kartrix/config.py",
             "kartrix/security/audit.py",
             "kartrix/security/permissions.py",
-            "CLAUDE.md",
             "kartrix/db/models.py"
           ],
           "scores": {
@@ -4951,7 +4947,6 @@
             "kartrix/config.py",
             "kartrix/security/audit.py",
             "kartrix/security/permissions.py",
-            "CLAUDE.md",
             "kartrix/db/models.py"
           ],
           "scores": {
@@ -4993,7 +4988,6 @@
             "kartrix/config.py",
             "kartrix/security/audit.py",
             "kartrix/security/permissions.py",
-            "CLAUDE.md",
             "tests/unit/test_session.py"
           ],
           "scores": {
@@ -11547,7 +11541,6 @@
             "docs/DECISIONS.md",
             "kartrix/cli.py",
             "docs/PROGRESS.md",
-            "CLAUDE.md",
             "docs/ROADMAP.md",
             ".github/workflows/ci.yml",
             "kartrix/headless/runner.py",
@@ -11590,7 +11583,6 @@
             "kartrix/main.py",
             "kartrix/tools/terminal_tools.py",
             "kartrix/tools/process_runner.py",
-            "CLAUDE.md",
             "kartrix/sandbox/selfcheck.py",
             "docs/ROADMAP.md",
             "kartrix/sandbox/posix.py",
@@ -11801,7 +11793,6 @@
             "tests/integration/test_headless.py",
             "tests/unit/test_headless.py",
             "kartrix/headless/runner.py",
-            "CLAUDE.md",
             "kartrix/tools/terminal_tools.py",
             "tests/unit/test_terminal_tools.py",
             "docs/ROADMAP.md"
@@ -18515,7 +18506,6 @@
             "backend/tests/crud/test_user.py",
             "frontend/src/client/types.gen.ts",
             ".agents/skills/library-skills/SKILL.md",
-            ".claude/skills/library-skills/SKILL.md",
             "frontend/src/components/ui/dropdown-menu.tsx"
           ],
           "scores": {
@@ -20010,7 +20000,6 @@
           "files": [
             ".pre-commit-config.yaml",
             ".github/workflows/playwright.yml",
-            ".claude/skills/library-skills/SKILL.md",
             ".agents/skills/library-skills/SKILL.md",
             ".github/workflows/test-backend.yml",
             ".github/workflows/prepare-release.yml",
