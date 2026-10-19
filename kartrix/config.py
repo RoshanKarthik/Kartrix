@@ -359,6 +359,9 @@ class DatabaseSettings(_Section):
     max_overflow: int = Field(10, ge=0)
     pool_timeout: float = Field(30.0, gt=0)
     echo: bool = False  # log every SQL statement (debug only)
+    # False: no idle connections are kept open — a serverless Postgres (Neon) can then sleep between requests
+    # instead of burning its free compute hours; each unit of work opens its own connection.
+    pooling: bool = True
 
 
 class LoggingSettings(_Section):

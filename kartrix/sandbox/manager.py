@@ -41,6 +41,8 @@ class SandboxStatus:
         if settings.sandbox.backend == "none":
             return "off (sandbox.backend: none) — every command that runs code needs your approval"
         why = "; ".join(self.tried) or "not supported on this OS"
+        if settings.sandbox.backend == "native":  # required (hosted servers): nothing unsandboxed runs
+            return f"not available ({why}) — commands that run code are refused"
         return f"not available ({why}) — every command that runs code needs your approval"
 
 

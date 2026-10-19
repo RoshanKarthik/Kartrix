@@ -35,12 +35,23 @@ def _same_path(a: str, b: str) -> bool:
     return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
 
 
-async def find_workspace(client: KartrixClient, folder: Path) -> dict[str, Any]:
-    """The server workspace for ``folder``, registered on first use."""
-    for ws in await client.workspaces():
+async def find_workspace(client: KartrixClient, folder: Path) -> tuple[dict[str, Any], bool]:
+    """The server workspace for ``folder``, registered on first use; True when it is a workspace *on the server*
+    (a hosted server doesn't work on folders of your machine), found or created by the folder's name."""
+    name = folder.name or str(folder)
+    existing = await client.workspaces()
+    for ws in existing:
         if _same_path(ws["root_path"], str(folder)):
-            return ws
-    return await client.create_workspace(folder.name or str(folder), str(folder))
+            return ws, False
+    try:
+        return await client.create_workspace(name, str(folder)), False
+    except ApiError as e:
+        if e.status != 403:
+            raise
+    for ws in existing:
+        if ws["name"] == name:
+            return ws, True
+    return await client.create_workspace(name), True
 
 
 class RunView:
@@ -162,15 +173,10 @@ async def run_remote(creds: Credentials, console: Console | None = None, model: 
     async with KartrixClient(creds.server, creds.token) as client:
         try:
             me = await client.me()
-            workspace = await find_workspace(client, folder)
+            workspace, on_server = await find_workspace(client, folder)
         except ApiError as e:
             if e.status == 401:
                 console.print("[red]Your login has expired — run `kartrix login` again.[/red]")
-            elif e.status == 403:
-                console.print(
-                    f"[red]{escape(creds.server)} doesn't work on folders of your machine. "
-                    "Use `kartrix --local` here.[/red]"
-                )
             else:
                 console.print(f"[red]{escape(e.detail)}[/red]")
             return 1
@@ -182,6 +188,12 @@ async def run_remote(creds: Credentials, console: Console | None = None, model: 
         console.print(
             f"[dim]Server {escape(creds.server)} · {escape(me['email'])} · workspace {escape(workspace['name'])}[/dim]"
         )
+        if on_server:
+            console.print(
+                "[yellow]This server works in its own copy of the workspace, not on your local files: nothing here "
+                "is uploaded, and what the agent writes stays on the server. Use `kartrix --local` for this "
+                "folder.[/yellow]"
+            )
         console.print(_HELP + "\n")
         view = RunView(client, console)
         new_session = False

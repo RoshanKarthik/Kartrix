@@ -1,7 +1,8 @@
 """The API client used by the CLI (and a reference for the web app and VS Code extension).
 
 Credentials (server URL + token) live in ``<user data dir>/credentials.json`` with owner-only
-permissions; ``KARTRIX_SERVER`` / ``KARTRIX_TOKEN`` override them (CI, scripts).
+permissions; ``KARTRIX_SERVER_URL`` / ``KARTRIX_API_TOKEN`` override them (CI, scripts) — not ``KARTRIX_SERVER``,
+which the config reads as the whole ``server`` section.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ def credentials_file() -> Path:
 
 
 def load_credentials() -> Credentials | None:
-    server, token = os.environ.get("KARTRIX_SERVER"), os.environ.get("KARTRIX_TOKEN")
+    server, token = os.environ.get("KARTRIX_SERVER_URL"), os.environ.get("KARTRIX_API_TOKEN")
     if server and token:
         return Credentials(server.rstrip("/"), token)
     path = credentials_file()

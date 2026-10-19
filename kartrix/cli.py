@@ -62,6 +62,14 @@ def main(argv: list[str] | None = None) -> int:
         description="Shows the model catalog: from the Kartrix server after `kartrix login` (unless --local), "
         "else this install's config.",
     )
+    admin = commands.add_parser(
+        "admin",
+        help="manage the accounts of a Kartrix server (uses DATABASE_URL)",
+        description="Run where the server's DATABASE_URL is set. Passwords are asked for, or read from the "
+        "KARTRIX_NEW_PASSWORD environment variable (scripts).",
+    )
+    admin.add_argument("action", choices=["create-user", "set-password", "list-users"])
+    admin.add_argument("--email", help="the account's email (create-user, set-password)")
     worker = commands.add_parser("worker")  # started by the server, not listed in --help
     worker.add_argument("--session", required=True)
     worker.add_argument("--mcp", action="store_true")
@@ -112,6 +120,8 @@ def main(argv: list[str] | None = None) -> int:
         from kartrix.server.worker import run_worker
 
         return run_worker(args.session, args.mcp, args.model)
+    if args.command == "admin":
+        return _admin(args)
     if args.command == "models":
         return asyncio.run(_models(args.local))
     if args.command in ("login", "logout", "whoami"):
@@ -179,6 +189,46 @@ async def _models(local: bool) -> int:
         return 1
     render_catalog(console, data, creds.server)
     return 0
+
+
+def _admin(args: argparse.Namespace) -> int:
+    import os
+
+    async def run(password: str | None) -> int:
+        from kartrix.db.engine import dispose_engine
+        from kartrix.server import auth
+
+        try:
+            if args.action == "list-users":
+                for user in await auth.list_users():
+                    print(f"{user.email}  (since {user.created_at:%Y-%m-%d})")
+                return 0
+            assert password is not None  # noqa: S101 — asked below for these actions
+            if args.action == "create-user":
+                user = await auth.create_user(args.email, password)
+                print(f"Created {user.email}.")
+                return 0
+            if await auth.set_password(args.email, password):
+                print(f"Password changed for {args.email}; their sessions were signed out.")
+                return 0
+            print(f"No account {args.email}.")
+            return 1
+        except ValueError as e:
+            print(f"kartrix admin: {e}")
+            return 1
+        finally:
+            await dispose_engine()
+
+    password = None
+    if args.action in ("create-user", "set-password"):
+        if not args.email:
+            print("kartrix admin: --email is required")
+            return 2
+        password = os.environ.get("KARTRIX_NEW_PASSWORD") or getpass.getpass("New password: ")
+        if "KARTRIX_NEW_PASSWORD" not in os.environ and getpass.getpass("Again: ") != password:
+            print("The passwords don't match.")
+            return 1
+    return asyncio.run(run(password))
 
 
 def _ask_login(args: argparse.Namespace) -> tuple[str, str] | None:

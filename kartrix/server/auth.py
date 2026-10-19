@@ -79,6 +79,45 @@ async def create_user(email: str, password: str) -> User:
     return user
 
 
+async def set_password(email: str, password: str) -> bool:
+    """Replace a user's password and revoke their tokens; False if there is no such user."""
+    email = normalize_email(email)
+    check_password_rules(password)
+    async with session_scope() as s:
+        user = (await s.execute(select(User).where(User.email == email))).scalar_one_or_none()
+        if user is None:
+            return False
+        user.password_hash = hash_password(password)
+        await s.execute(
+            update(ApiToken)
+            .where(ApiToken.user_id == user.id, ApiToken.revoked_at.is_(None))
+            .values(revoked_at=datetime.now(UTC))
+        )
+    return True
+
+
+async def list_users() -> list[User]:
+    async with session_scope() as s:
+        return list((await s.execute(select(User).order_by(User.created_at))).scalars())
+
+
+async def ensure_bootstrap_admin() -> str | None:
+    """``KARTRIX_ADMIN_EMAIL`` + ``KARTRIX_ADMIN_PASSWORD``: create that account if it doesn't exist yet — how
+    the first user gets in when sign-up is closed and the host has no shell. Never changes an existing user."""
+    import os
+
+    email, password = os.environ.get("KARTRIX_ADMIN_EMAIL", "").strip(), os.environ.get("KARTRIX_ADMIN_PASSWORD", "")
+    if not email or not password:
+        return None
+    try:
+        await create_user(email, password)
+    except ValueError as e:
+        if "already exists" in str(e):
+            return None
+        raise
+    return normalize_email(email)
+
+
 async def authenticate(email: str, password: str) -> User | None:
     try:
         email = normalize_email(email)

@@ -353,3 +353,46 @@ async def test_model_per_run_and_session(
     monkeypatch.setattr(settings.server, "allow_local_paths", False)  # hosted: the operator's key isn't yours
     r = await http.post(runs, json={"input": "x", "model": "claude-opus-5-5"}, headers=ada)
     assert r.status_code == 422 and "own key" in r.json()["detail"]
+
+
+async def test_bootstrap_admin_and_admin_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kartrix.server import auth
+
+    monkeypatch.setenv("KARTRIX_ADMIN_EMAIL", "Owner@Example.com")
+    monkeypatch.setenv("KARTRIX_ADMIN_PASSWORD", "first-pass-123")
+    assert await auth.ensure_bootstrap_admin() == "owner@example.com"
+    assert await auth.ensure_bootstrap_admin() is None  # exists already: left alone
+    monkeypatch.setenv("KARTRIX_ADMIN_PASSWORD", "changed-in-env-456")
+    await auth.ensure_bootstrap_admin()
+    assert await auth.authenticate("owner@example.com", "first-pass-123") is not None  # env never resets it
+
+    user = await auth.authenticate("owner@example.com", "first-pass-123")
+    assert user is not None
+    token = await auth.issue_token(user.id, "cli")
+    assert await auth.set_password("owner@example.com", "new-pass-789")
+    assert await auth.user_for_token(token) is None  # old sessions signed out
+    assert await auth.authenticate("owner@example.com", "new-pass-789") is not None
+    assert not await auth.set_password("nobody@example.com", "whatever-123")
+    assert [u.email for u in await auth.list_users()] == ["owner@example.com"]
+
+
+async def test_cli_workspace_on_local_and_hosted_servers(
+    server: tuple[FakePool, httpx.AsyncClient], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kartrix.client.repl import find_workspace
+
+    _, http = server
+    ada = await _signup(http, "ada@example.com")
+    client = KartrixClient("http://kartrix.test", ada["Authorization"].split()[1], transport=http._transport)
+    folder = tmp_path / "myrepo"
+    folder.mkdir()
+    ws, on_server = await find_workspace(client, folder)
+    assert not on_server and Path(ws["root_path"]) == folder.resolve()  # local server: this very folder
+    monkeypatch.setattr(settings.server, "allow_local_paths", False)  # hosted
+    other = tmp_path / "other"
+    other.mkdir()
+    hosted, on_server = await find_workspace(client, other)
+    assert on_server and hosted["name"] == "other" and Path(hosted["root_path"]) != other
+    again, _ = await find_workspace(client, other)
+    assert again["id"] == hosted["id"]  # the same server workspace next time
+    await client.close()

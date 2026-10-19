@@ -1,0 +1,31 @@
+# Render Blueprint for the free hosted Kartrix demo (see deploy/README.md).
+# Free plan only: Render bills nothing unless a payment method is added to the account.
+services:
+  - type: web
+    name: kartrix
+    runtime: docker
+    plan: free
+    region: singapore          # closest free region to India; keep Neon in AWS Singapore too
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /v1/health
+    autoDeploy: true
+    envVars:
+      # Neon connection string — the DIRECT one (connection pooling switched off), see deploy/README.md
+      - key: DATABASE_URL
+        sync: false
+      # The first account; created at startup if it doesn't exist (sign-up is closed)
+      - key: KARTRIX_ADMIN_EMAIL
+        sync: false
+      - key: KARTRIX_ADMIN_PASSWORD
+        sync: false
+      # Free model keys (the same ones as in your local .env)
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: HF_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false

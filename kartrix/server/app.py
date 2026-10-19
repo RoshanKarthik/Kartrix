@@ -175,6 +175,8 @@ def create_app(pool: WorkerPool | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         workers = pool or WorkerPool(server_data_dir())
         app.state.pool = workers
+        if (created := await auth.ensure_bootstrap_admin()) is not None:
+            logger.info("Bootstrap account created", extra={"email": created})
         async with session_scope() as s:  # runs cut off by a restart can't finish any more
             await s.execute(
                 update(Run).where(Run.status == "running").values(status="error", detail="the server restarted")
@@ -522,12 +524,28 @@ def serve(host: str | None = None, port: int | None = None) -> int:
     import uvicorn
 
     host = host or settings.server.host
-    port = port or settings.server.port
+    port = port or int(os.environ.get("PORT", "0")) or settings.server.port  # PORT: set by hosting platforms
     if host not in ("127.0.0.1", "localhost", "::1") and settings.server.allow_local_paths:
         print(
             "kartrix serve: refusing to listen on a public address while server.allow_local_paths is true — "
             "anyone who signs up could point the agent at this machine's folders. Set it to false for hosting.",
         )
         return 3
-    uvicorn.run(create_app(), host=host, port=port, log_level="info", proxy_headers=False)
+    if not settings.server.allow_local_paths:
+        harden_for_hosting()
+    uvicorn.run(create_app(), host=host, port=port, log_level="info", proxy_headers=True, forwarded_allow_ips="*")
     return 0
+
+
+def harden_for_hosting() -> None:
+    """A hosted server runs other people's requests: a command that would run code but can't be sandboxed is
+    refused, never offered for approval — the person approving is the remote user, and the code would run next
+    to the server's database credentials and model keys. Workers inherit the setting through the environment."""
+    if settings.sandbox.backend in ("auto", "none"):
+        os.environ["KARTRIX_SANDBOX__BACKEND"] = "native"
+        settings.sandbox.backend = "native"
+    from kartrix.sandbox.manager import status as sandbox_status
+
+    print(f"kartrix serve: hosted mode · sandbox: {sandbox_status().describe()}")
+    if sandbox_status().backend is None:
+        print("kartrix serve: no sandbox here — commands that run code are refused (agents can read, write, plan)")

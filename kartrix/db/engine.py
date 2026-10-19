@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from kartrix.config import settings
 from kartrix.observability.logger import get_logger
@@ -28,9 +29,22 @@ def get_database_url() -> str:
     url = os.environ.get("DATABASE_URL", "").strip()
     if not url:
         raise DatabaseConfigError("DATABASE_URL is not set — add it to .env (see .env.example)")
-    if make_url(url).drivername != "postgresql+asyncpg":
-        raise DatabaseConfigError("DATABASE_URL must use the postgresql+asyncpg:// scheme")
-    return url
+    return normalize_database_url(url)
+
+
+def normalize_database_url(url: str) -> str:
+    """Accept the URLs hosting providers hand out (``postgres://``, ``postgresql://``, ``sslmode=require``) and
+    turn them into the asyncpg form; anything that isn't Postgres is refused."""
+    parsed = make_url(url)
+    if parsed.drivername in ("postgres", "postgresql", "postgresql+psycopg2", "postgresql+psycopg"):
+        parsed = parsed.set(drivername="postgresql+asyncpg")
+    if parsed.drivername != "postgresql+asyncpg":
+        raise DatabaseConfigError("DATABASE_URL must be a PostgreSQL URL (postgresql+asyncpg:// or postgres://)")
+    query = dict(parsed.query)
+    if "sslmode" in query:  # libpq spelling → asyncpg's
+        query["ssl"] = query.pop("sslmode")
+    query.pop("channel_binding", None)  # libpq-only option some providers add
+    return parsed.set(query=query).render_as_string(hide_password=False)
 
 
 def get_engine() -> AsyncEngine:
@@ -39,14 +53,17 @@ def get_engine() -> AsyncEngine:
     if _engine is None:
         url = get_database_url()
         cfg = settings.database
-        _engine = create_async_engine(
-            url,
-            pool_size=cfg.pool_size,
-            max_overflow=cfg.max_overflow,
-            pool_timeout=cfg.pool_timeout,
-            pool_pre_ping=True,
-            echo=cfg.echo,
-        )
+        if cfg.pooling:
+            _engine = create_async_engine(
+                url,
+                pool_size=cfg.pool_size,
+                max_overflow=cfg.max_overflow,
+                pool_timeout=cfg.pool_timeout,
+                pool_pre_ping=True,
+                echo=cfg.echo,
+            )
+        else:
+            _engine = create_async_engine(url, poolclass=NullPool, echo=cfg.echo)
         # render_as_string hides the password in the log line.
         logger.info("Database engine created", extra={"url": make_url(url).render_as_string(hide_password=True)})
     return _engine

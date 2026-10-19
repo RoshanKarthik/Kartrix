@@ -334,6 +334,7 @@ database:                       # URL comes from DATABASE_URL in .env
   max_overflow: 10
   pool_timeout: 30
   echo: false
+  pooling: true                 # false: no idle connections (lets a serverless Postgres such as Neon sleep)
 
 logging:
   level: INFO                   # level for kartrix.* loggers
