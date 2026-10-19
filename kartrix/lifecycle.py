@@ -3,6 +3,11 @@
 On Windows the running ``kartrix.exe`` and its Python files are locked while Kartrix runs, so uv can't replace or
 remove them from inside this process: the uv command is started in a new console window that waits until Kartrix
 has exited. On macOS/Linux files in use can be replaced, so uv simply takes over this process.
+
+Installs and updates use the tested versions: ``constraints.txt`` (``uv.lock`` exported) is passed to
+``uv tool install``, which would otherwise pick the newest versions ``pyproject.toml`` allows. ``kartrix update``
+reinstalls with the new version's constraints instead of ``uv tool upgrade``, which keeps the constraints of the first
+install forever. The source and constraints follow the same rules as ``scripts/install.ps1`` and ``install.sh``.
 """
 
 from __future__ import annotations
@@ -13,6 +18,35 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+
+PUBLISHED_SOURCE = "git+https://github.com/RoshanKarthik/Kartrix"
+PUBLISHED_CONSTRAINTS = "https://raw.githubusercontent.com/RoshanKarthik/Kartrix/main/constraints.txt"
+
+
+def install_source() -> str:
+    return os.environ.get("KARTRIX_SOURCE") or PUBLISHED_SOURCE
+
+
+def constraints_for(source: str) -> str | None:
+    """The constraints file for installing ``source``: ``KARTRIX_CONSTRAINTS`` (``none`` turns it off), the
+    published one for the published repo, a folder's own ``constraints.txt``, else None (newest allowed versions)."""
+    chosen = os.environ.get("KARTRIX_CONSTRAINTS")
+    if chosen:
+        return None if chosen.lower() == "none" else chosen
+    if source == PUBLISHED_SOURCE:
+        return PUBLISHED_CONSTRAINTS
+    if "://" in source:
+        return None
+    local = Path(source) / "constraints.txt"
+    return str(local) if local.is_file() else None
+
+
+def install_args(source: str, constraints: str | None) -> list[str]:
+    """``uv`` arguments that (re)install Kartrix from ``source`` with the versions in ``constraints``."""
+    args = ["tool", "install", "--python", "3.12", "--force", "--refresh-package", "kartrix"]
+    if constraints:
+        args += ["--constraints", constraints]
+    return [*args, source]
 
 
 def uv_executable() -> str | None:
@@ -42,7 +76,7 @@ def installed_as_tool(tools: Path | None, prefix: Path | None = None) -> bool:
 def handoff_command(uv: str, args: list[str], platform: str | None = None) -> list[str]:
     """The command that runs ``uv <args>`` once this process is gone."""
     if (platform or sys.platform) == "win32":
-        inner = f'timeout /t 3 /nobreak >nul & "{uv}" {" ".join(args)} & echo. & pause'
+        inner = f'timeout /t 3 /nobreak >nul & "{uv}" {subprocess.list2cmdline(args)} & echo. & pause'
         return ["cmd.exe", "/c", inner]
     return [uv, *args]
 
@@ -71,8 +105,12 @@ def update() -> int:
     uv = uv_executable()
     if uv is None or not installed_as_tool(tool_dir(uv)):
         return _not_a_tool_install(uv)
-    print("Updating Kartrix...")
-    return _hand_off(uv, ["tool", "upgrade", "kartrix"])
+    source = install_source()
+    constraints = constraints_for(source)
+    print(f"Updating Kartrix from {source} ...")
+    if constraints is None:
+        print("No constraints file for this source: dependencies get the newest versions allowed, not the tested ones.")
+    return _hand_off(uv, install_args(source, constraints))
 
 
 def data_folders() -> list[Path]:

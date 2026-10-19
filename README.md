@@ -110,7 +110,15 @@ macOS / Linux:
 curl -LsSf https://raw.githubusercontent.com/RoshanKarthik/Kartrix/main/scripts/install.sh | sh
 ```
 
-Already use uv? `uv tool install --python 3.12 git+https://github.com/RoshanKarthik/Kartrix` does the same.
+Already use uv? This does the same, with the tested dependency versions from
+[`constraints.txt`](constraints.txt) (`uv.lock` exported):
+
+```bash
+uv tool install --python 3.12 --constraints https://raw.githubusercontent.com/RoshanKarthik/Kartrix/main/constraints.txt git+https://github.com/RoshanKarthik/Kartrix
+```
+
+Update with `kartrix update` (it reinstalls with the new version's constraints; `uv tool upgrade kartrix` would keep
+the old ones).
 
 ## Quick start
 

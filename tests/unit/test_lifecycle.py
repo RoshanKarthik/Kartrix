@@ -24,6 +24,8 @@ def test_handoff_command() -> None:
     windows = lifecycle.handoff_command("C:/uv/uv.exe", ["tool", "upgrade", "kartrix"], "win32")
     assert windows[:2] == ["cmd.exe", "/c"]
     assert "timeout /t 3" in windows[2] and '"C:/uv/uv.exe" tool upgrade kartrix' in windows[2]  # after Kartrix exits
+    spaced = lifecycle.handoff_command("uv", ["--constraints", "C:/My Repo/constraints.txt"], "win32")
+    assert '"C:/My Repo/constraints.txt"' in spaced[2]  # a path with spaces stays one argument
     assert lifecycle.handoff_command("/usr/bin/uv", ["tool", "uninstall", "kartrix"], "linux") == [
         "/usr/bin/uv", "tool", "uninstall", "kartrix",
     ]  # fmt: skip
@@ -53,8 +55,28 @@ def test_update_a_tool_install(monkeypatch: pytest.MonkeyPatch, handed_off: list
     monkeypatch.setattr(lifecycle, "uv_executable", lambda: "uv")
     monkeypatch.setattr(lifecycle, "tool_dir", lambda uv: Path("/x"))
     monkeypatch.setattr(lifecycle, "installed_as_tool", lambda tools: True)
+    monkeypatch.delenv("KARTRIX_SOURCE", raising=False)
+    monkeypatch.delenv("KARTRIX_CONSTRAINTS", raising=False)
     assert lifecycle.update() == 0
-    assert handed_off == [["uv", "tool", "upgrade", "kartrix"]]
+    # a reinstall with the published constraints, not `uv tool upgrade` (which keeps the first install's pins)
+    assert handed_off == [
+        ["uv", "tool", "install", "--python", "3.12", "--force", "--refresh-package", "kartrix",
+         "--constraints", lifecycle.PUBLISHED_CONSTRAINTS, lifecycle.PUBLISHED_SOURCE],
+    ]  # fmt: skip
+
+
+def test_constraints_for_each_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("KARTRIX_CONSTRAINTS", raising=False)
+    assert lifecycle.constraints_for(lifecycle.PUBLISHED_SOURCE) == lifecycle.PUBLISHED_CONSTRAINTS
+    (tmp_path / "constraints.txt").write_text("rich==14.0.0\n", encoding="utf-8")
+    assert lifecycle.constraints_for(str(tmp_path)) == str(tmp_path / "constraints.txt")  # a checkout's own
+    assert lifecycle.constraints_for(str(tmp_path / "kartrix-0.1.0-py3-none-any.whl")) is None
+    assert lifecycle.constraints_for("git+https://example.com/fork") is None
+    monkeypatch.setenv("KARTRIX_CONSTRAINTS", "https://example.com/c.txt")
+    assert lifecycle.constraints_for("git+https://example.com/fork") == "https://example.com/c.txt"
+    monkeypatch.setenv("KARTRIX_CONSTRAINTS", "none")
+    assert lifecycle.constraints_for(lifecycle.PUBLISHED_SOURCE) is None
+    assert "--constraints" not in lifecycle.install_args(lifecycle.PUBLISHED_SOURCE, None)
 
 
 @pytest.fixture
