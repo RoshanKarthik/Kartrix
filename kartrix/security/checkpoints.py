@@ -31,6 +31,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -53,6 +54,8 @@ logger = get_logger(__name__)
 _GIT_TIMEOUT = 300
 _STALE_LOCK_SECONDS = 60
 _MAX_LISTED_FILES = 500
+_MAX_SHOWN_BYTES = 1_000_000  # a file version larger than this isn't sent to a client
+_DRIVE = re.compile(r"^[A-Za-z]:")
 _GITLINK = "160000"  # a nested repository; never restored or deleted
 # Highest-precedence attributes: no eol conversion, filters (they run programs), ident or re-encoding.
 _ATTRIBUTES = "* -text -eol -filter -ident -working-tree-encoding\n"
@@ -84,6 +87,25 @@ class UndoResult:
     deleted: list[str] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)  # changed since; blocks unless forced
     errors: list[str] = field(default_factory=list)
+
+
+@dataclass
+class FileVersion:
+    """One file as a checkpoint tree has it."""
+
+    exists: bool
+    kind: str = "file"  # file, symlink (data = the link's target) or other (a folder or nested repository)
+    size: int = 0
+    data: bytes | None = None  # None: missing, not a file, or larger than the limit
+
+
+def clean_path(rel: str) -> str:
+    """A workspace-relative file path in git's form, or ValueError: nothing absolute, no ``..``, no drive."""
+    path = rel.replace("\\", "/").strip()
+    parts = [p for p in path.split("/") if p not in ("", ".")]
+    if not parts or path.startswith("/") or _DRIVE.match(path) or ".." in parts or "\0" in path:
+        raise ValueError(f"not a file path inside the workspace: {rel!r}")
+    return "/".join(parts)
 
 
 @dataclass(frozen=True)
@@ -230,6 +252,32 @@ class Checkpoints:
         with self._lock:
             stack = self._load()
             return stack["undo"], stack["redo"]
+
+    def find(self, prefix: str) -> list[Entry]:
+        """The kept entries (undone or not) whose id starts with ``prefix``."""
+        prefix = prefix.strip().lower()
+        if not prefix:
+            return []
+        undo, redo = self.entries()
+        return [e for e in (*undo, *redo) if e.id.startswith(prefix)]
+
+    def read(self, tree: str, rel: str, limit: int = _MAX_SHOWN_BYTES) -> FileVersion:
+        """File ``rel`` in snapshot ``tree`` (read-only: the workspace and the shadow index are not touched)."""
+        rel = clean_path(rel)
+        with self._lock:
+            out = self._git("ls-tree", "-l", "-z", "--full-tree", tree, "--", rel).stdout
+            for record in out.decode("utf-8", "surrogateescape").split("\0"):
+                meta, _, name = record.partition("\t")
+                if name != rel:
+                    continue
+                mode, kind, oid, size = meta.split()
+                if kind != "blob":
+                    return FileVersion(exists=True, kind="other")
+                version = FileVersion(exists=True, kind="symlink" if mode == "120000" else "file", size=int(size))
+                if version.size <= limit:
+                    version.data = self._git("cat-file", "blob", oid).stdout
+                return version
+        return FileVersion(exists=False)
 
     def record(self, label: str, before: str, after: str, session_id: str | None = None) -> Entry | None:
         """Add an undo entry if the trees differ (a new change clears the redo list)."""
@@ -403,4 +451,4 @@ async def track(label: str, session_id: str | None = None) -> AsyncIterator[Trac
                 logger.error("Checkpoint after a run failed", extra={"error": str(e), "label": label})
             if tracked.entry is not None:
                 entry = tracked.entry
-                emit(FilesChanged(label=entry.label, files=list(entry.files), count=entry.file_count))
+                emit(FilesChanged(label=entry.label, files=list(entry.files), count=entry.file_count, entry=entry.id))

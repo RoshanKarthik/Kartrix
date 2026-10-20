@@ -68,12 +68,15 @@ test("a hosted server is refused for local folders", async () => {
   await assert.rejects(findWorkspace(new KartrixApi("http://s", "t", fetch), "/repo", "repo", "linux"), /local `kartrix serve`/);
 });
 
-test("input: plain text and /ask ask, /plan plans, other commands are pointed to the terminal", () => {
+test("input: plain text and /ask ask, /plan plans, /undo /redo /checkpoints run here, others are pointed to the terminal", () => {
   assert.deepEqual(parseInput("  what does slugify do?  "), { kind: "ask", input: "what does slugify do?" });
   assert.deepEqual(parseInput("/ask where is it tested?"), { kind: "ask", input: "where is it tested?" });
   assert.deepEqual(parseInput("/plan a todo API\nwith tests"), { kind: "plan", input: "a todo API\nwith tests" });
   assert.ok("error" in parseInput("/plan"));
-  assert.ok("error" in parseInput("/undo"));
+  assert.deepEqual(parseInput("/undo"), { command: "undo" });
+  assert.deepEqual(parseInput(" /checkpoints "), { command: "checkpoints" });
+  assert.ok("error" in parseInput("/undo force"));
+  assert.ok("error" in parseInput("/mode auto"));
   assert.ok("error" in parseInput("   "));
 });
 

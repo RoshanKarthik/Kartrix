@@ -175,7 +175,7 @@ kartrix sandbox check                                                       # wh
 ## VS Code
 
 The extension in [`vscode/`](vscode/) puts the same agent in the editor's side bar: chat with a live feed of agent
-steps and tool calls, approvals, plan review and the model picker. It is a thin client over a local `kartrix serve`
+steps and tool calls, approvals, plan review, the model picker, changed files with diffs, and undo / redo. It is a thin client over a local `kartrix serve`
 (started for you), so the command policy, sandbox and approvals are the terminal's. Sign in once with
 `kartrix login --signup`; see [vscode/README.md](vscode/README.md).
 

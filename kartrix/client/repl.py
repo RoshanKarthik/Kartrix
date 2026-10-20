@@ -28,8 +28,9 @@ from kartrix.ui.console import ConsoleRenderer
 _HELP = (
     "[dim]/ask <question> · /plan <goal> · /model \\[id] · /new (new conversation) · /whoami · /exit · "
     "Ctrl+C stops a run\n"
-    "/undo · /redo · /checkpoints · /mode \\[read_only|default|auto] · /memory \\[add \\[--user] <text>|forget <id>] · "
-    "/skills \\[trust|untrust <name>] · /mcp · /connect <server> · /disconnect <server>\n"
+    "/undo · /redo · /checkpoints \\[show \\[--after] <id> <path>] · /mode \\[read_only|default|auto] · "
+    "/memory \\[add \\[--user] <text>|forget <id>] · /skills \\[trust|untrust <name>] · "
+    "/mcp · /connect <server> · /disconnect <server>\n"
     "Other commands (/audit, /trace, /budget, /reindex …) need the local mode: kartrix --local[/dim]"
 )
 _LOCAL_ONLY = "isn't available through the server yet — run `kartrix --local` for it"

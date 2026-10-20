@@ -101,16 +101,40 @@ def _render_checkpoints(console: Console, result: dict[str, Any]) -> None:
         console.print("[dim]No checkpoints yet — every chat turn and /plan task that changes files gets one.[/dim]")
         return
     table = Table(title="Checkpoints (newest first)")
-    for col in ("", "when", "change", "files"):
+    for col in ("", "id", "when", "change", "files"):
         table.add_column(col)
     for entry in reversed(redo):
         table.add_row(
-            "[dim]undone[/dim]", _when(entry["created"]), escape(entry["label"][:70]), str(entry["file_count"])
+            "[dim]undone[/dim]",
+            entry["id"][:8],
+            _when(entry["created"]),
+            escape(entry["label"][:70]),
+            str(entry["file_count"]),
         )
     for i, entry in enumerate(reversed(undo)):
         mark = "[green]/undo →[/green]" if i == 0 else ""
-        table.add_row(mark, _when(entry["created"]), escape(entry["label"][:70]), str(entry["file_count"]))
+        table.add_row(
+            mark, entry["id"][:8], _when(entry["created"]), escape(entry["label"][:70]), str(entry["file_count"])
+        )
     console.print(table)
+    console.print("[dim]/checkpoints show [--after] <id> <path> shows a file as it was before (after) a change.[/dim]")
+
+
+def _render_checkpoints_show(console: Console, result: dict[str, Any]) -> None:
+    if not result["available"]:
+        console.print(f"[yellow]Checkpoints are off: {escape(str(result.get('reason')))}[/yellow]")
+        return
+    where = f"{escape(result['path'])} {result['side']} “{escape(result['label'][:80])}”"
+    if not result["exists"]:
+        console.print(f"[dim]{where}: the file didn't exist.[/dim]")
+    elif result["kind"] == "other":
+        console.print(f"[dim]{where}: a folder or nested repository, not a file.[/dim]")
+    elif result["binary"] or result["too_large"]:
+        what = "a binary file" if result["binary"] else "too large to show"
+        console.print(f"[dim]{where}: {what} ({result['size']:,} bytes).[/dim]")
+    else:
+        console.print(f"[dim]── {where} ──[/dim]")
+        console.print(result["content"], markup=False, highlight=False, soft_wrap=True)
 
 
 def _render_step(console: Console, result: dict[str, Any]) -> None:
@@ -221,6 +245,7 @@ def _render_mcp_disconnect(console: Console, result: dict[str, Any]) -> None:
 
 _RENDERERS: dict[str, Callable[[Console, dict[str, Any]], None]] = {
     "checkpoints": _render_checkpoints,
+    "checkpoints.show": _render_checkpoints_show,
     "undo": _render_step,
     "redo": _render_step,
     "mode": _render_mode,

@@ -242,3 +242,32 @@ pre code {
   padding-left: 1.4em;
   font-family: var(--vscode-editor-font-family);
 }
+
+.files {
+  padding: 4px;
+}
+
+.files .buttons {
+  justify-content: flex-start;
+  margin-top: 2px;
+}
+
+button.small {
+  padding: 1px 6px;
+  font-size: 0.9em;
+}
+
+button.link {
+  background: none;
+  color: var(--vscode-textLink-foreground);
+  padding: 0;
+  font-family: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+button.link:hover:not(:disabled) {
+  background: none;
+  color: var(--vscode-textLink-activeForeground);
+  text-decoration: underline;
+}

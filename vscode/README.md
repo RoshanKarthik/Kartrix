@@ -9,6 +9,11 @@ the command policy, the sandbox and every approval rule run in your local `kartr
   edit the command, or reject with a reason for the agent.
 - **Plan review**: read the plan's tasks, risks and assumptions; approve it or send it back with what should change.
 - **Model picker**: any model of your Kartrix catalog that has a key.
+- **Changed files**: every change lists its files — click one to open it, or **diff** to see that change (before ↔
+  after, read from Kartrix's checkpoints) in VS Code's diff editor.
+- **Undo / redo**: the **Undo** button under a change, `/undo` / `/redo` in the chat, or the commands *Kartrix: Undo
+  Last Change*, *Kartrix: Redo* and *Kartrix: Show Checkpoints* (pick a change, then a file to diff). If a file was
+  edited since, Kartrix asks before overwriting it.
 
 ## Requirements
 

@@ -2,6 +2,7 @@
 
 import * as vscode from "vscode";
 
+import { SCHEME } from "./changes";
 import { ChatController } from "./chat";
 import { LocalServer } from "./server";
 
@@ -20,6 +21,10 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("kartrix.pickModel", () => chat.pickModel()),
     vscode.commands.registerCommand("kartrix.signIn", () => chat.signIn()),
     vscode.commands.registerCommand("kartrix.reconnect", () => chat.connect()),
+    vscode.workspace.registerTextDocumentContentProvider(SCHEME, chat.changes),
+    vscode.commands.registerCommand("kartrix.undo", () => chat.changes.step("undo")),
+    vscode.commands.registerCommand("kartrix.redo", () => chat.changes.step("redo")),
+    vscode.commands.registerCommand("kartrix.showCheckpoints", () => chat.changes.showCheckpoints()),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("kartrix.serverUrl")) void chat.connect();
     }),

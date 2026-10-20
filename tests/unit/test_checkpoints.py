@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from kartrix.config import settings
+from kartrix.core.events import FilesChanged
 from kartrix.security import checkpoints
 from kartrix.security.checkpoints import Checkpoints
 from kartrix.security.workspace import set_workspace
@@ -206,9 +207,50 @@ def test_only_the_newest_entries_are_kept(ws: Path, monkeypatch: pytest.MonkeyPa
     assert entries[0] is not None and entries[0].id not in refs
 
 
+def test_read_gives_a_file_before_and_after_an_entry(ws: Path) -> None:
+    _write(ws / "app.py", b"v1\n")
+    _write(ws / "logo.bin", b"\x89PNG\0\0")
+    cp = _store(ws)
+
+    def change() -> None:
+        _write(ws / "app.py", b"v2\n")
+        _write(ws / "src" / "new.py", b"new\n")
+        (ws / "logo.bin").unlink()
+
+    entry = _turn(cp, change)
+    assert entry is not None
+    assert cp.read(entry.before, "app.py").data == b"v1\n" and cp.read(entry.after, "app.py").data == b"v2\n"
+    assert cp.read(entry.before, "src/new.py").exists is False
+    assert cp.read(entry.after, "./src//new.py").data == b"new\n"
+    assert cp.read(entry.after, "src\\new.py").data == b"new\n"
+    assert cp.read(entry.before, "logo.bin").data == b"\x89PNG\0\0"
+    assert cp.read(entry.before, "src").exists is False  # src/ didn't exist before
+    folder = cp.read(entry.after, "src")
+    assert (folder.exists, folder.kind, folder.data) == (True, "other", None)
+    big = cp.read(entry.after, "app.py", limit=2)
+    assert (big.exists, big.size, big.data) == (True, 3, None)
+    assert cp.find(entry.id[:4]) == [entry] and cp.find("") == [] and cp.find("zz") == []
+    cp.undo()
+    assert cp.find(entry.id) == [entry]  # undone entries stay readable (for redo)
+    assert cp.read(entry.after, "app.py").data == b"v2\n"
+
+
+@pytest.mark.parametrize("bad", ["", ".", "../x", "a/../../x", "/etc/passwd", "C:/Windows/x", "c:x", "a/\0"])
+def test_clean_path_refuses_paths_outside_the_workspace(bad: str) -> None:
+    with pytest.raises(ValueError, match="not a file path"):
+        checkpoints.clean_path(bad)
+
+
+def test_clean_path_normalises() -> None:
+    assert checkpoints.clean_path("./src\\a.py") == "src/a.py"
+    assert checkpoints.clean_path("notes/a:b.txt") == "notes/a:b.txt"  # a colon is only refused as a drive
+
+
 async def test_track_records_changes_even_when_the_run_fails(ws: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cp = _store(ws)
     monkeypatch.setattr(checkpoints, "_store", cp)
+    emitted: list[FilesChanged] = []
+    monkeypatch.setattr(checkpoints, "emit", emitted.append)
     async with checkpoints.track("/ask nothing"):
         pass
     with pytest.raises(RuntimeError):
@@ -217,6 +259,7 @@ async def test_track_records_changes_even_when_the_run_fails(ws: Path, monkeypat
             raise RuntimeError("stopped mid-way")
     undo, _ = cp.entries()
     assert [(e.label, e.session_id, e.files) for e in undo] == [("/ask write", "s1", ["half.py"])]
+    assert [e.entry for e in emitted] == [undo[0].id]  # the event names the entry (diffs in the editor)
 
 
 async def test_track_without_a_store_just_runs(monkeypatch: pytest.MonkeyPatch) -> None:

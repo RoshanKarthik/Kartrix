@@ -67,6 +67,24 @@
         "title": "Reconnect to the Server",
         "category": "Kartrix",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "kartrix.undo",
+        "title": "Undo Last Change",
+        "category": "Kartrix",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "kartrix.redo",
+        "title": "Redo",
+        "category": "Kartrix",
+        "icon": "$(redo)"
+      },
+      {
+        "command": "kartrix.showCheckpoints",
+        "title": "Show Checkpoints",
+        "category": "Kartrix",
+        "icon": "$(history)"
       }
     ],
     "menus": {
@@ -77,9 +95,14 @@
           "group": "navigation@1"
         },
         {
-          "command": "kartrix.reconnect",
+          "command": "kartrix.showCheckpoints",
           "when": "view == kartrix.chat",
           "group": "navigation@2"
+        },
+        {
+          "command": "kartrix.reconnect",
+          "when": "view == kartrix.chat",
+          "group": "navigation@3"
         }
       ]
     },

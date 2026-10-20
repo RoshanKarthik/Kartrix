@@ -21,6 +21,7 @@ if TYPE_CHECKING:  # the remote client imports this module: no LangChain at star
 # name → True when it changes state (refused while a run is in progress in the workspace)
 COMMANDS: dict[str, bool] = {
     "checkpoints": False,
+    "checkpoints.show": False,
     "undo": True,
     "redo": True,
     "mode": True,  # also lists the mode (no "target")
@@ -37,6 +38,7 @@ COMMANDS: dict[str, bool] = {
 SLASH_COMMANDS = ("/undo", "/redo", "/checkpoints", "/mode", "/memory", "/skills", "/mcp", "/connect", "/disconnect")
 MEMORY_USAGE = "Usage: /memory, /memory add [--user] <text>, /memory forget <id>"
 SKILLS_USAGE = "Usage: /skills, /skills trust <name>, /skills untrust <name>"
+SHOW_USAGE = "Usage: /checkpoints, /checkpoints show [--after] <id> <path>"
 
 
 class CommandError(Exception):
@@ -65,7 +67,15 @@ def parse(line: str) -> tuple[str, dict[str, Any]]:
             raise CommandError(f"Usage: {command} [force]")
         return command[1:], {"force": arg == "force"}
     if command == "/checkpoints":
-        return "checkpoints", {}
+        if not arg:
+            return "checkpoints", {}
+        action, _, rest = arg.partition(" ")
+        rest = rest.strip()
+        after = rest.startswith("--after ")
+        entry, _, path = rest.removeprefix("--after ").strip().partition(" ")
+        if action == "show" and entry and path.strip():
+            return "checkpoints.show", {"entry": entry, "path": path.strip(), "side": "after" if after else "before"}
+        raise CommandError(SHOW_USAGE)
     if command == "/mode":
         return "mode", {"target": arg or None}
     if command == "/memory":
@@ -115,7 +125,13 @@ async def _record(host: CommandHost, action: str, target: str, details: dict[str
 
 
 def _entry(entry: Any) -> dict[str, Any]:
-    return {"id": entry.id, "label": entry.label, "created": entry.created, "file_count": entry.file_count}
+    return {
+        "id": entry.id,
+        "label": entry.label,
+        "created": entry.created,
+        "file_count": entry.file_count,
+        "files": entry.files,
+    }
 
 
 async def _checkpoints(host: CommandHost, args: dict[str, Any]) -> dict[str, Any]:
@@ -126,6 +142,47 @@ async def _checkpoints(host: CommandHost, args: dict[str, Any]) -> dict[str, Any
         return {"available": False, "reason": checkpoints.unavailable_reason()}
     undo, redo = await asyncio.to_thread(store.entries)
     return {"available": True, "undo": [_entry(e) for e in undo], "redo": [_entry(e) for e in redo]}
+
+
+async def _checkpoints_show(host: CommandHost, args: dict[str, Any]) -> dict[str, Any]:
+    """One file as it was before (or after) a checkpointed change — read-only, so not audited."""
+    from kartrix.security import checkpoints
+
+    side = args.get("side") or "before"
+    if side not in ("before", "after"):
+        raise CommandError(SHOW_USAGE)
+    try:
+        path = checkpoints.clean_path(str(args.get("path") or ""))
+    except ValueError as e:
+        raise CommandError(str(e)) from None
+    store = checkpoints.current()
+    if store is None:
+        return {"available": False, "reason": checkpoints.unavailable_reason()}
+    found = await asyncio.to_thread(store.find, str(args.get("entry") or ""))
+    if len(found) != 1:
+        raise CommandError(
+            "Ambiguous checkpoint id." if found else "No checkpoint with that id (old ones are dropped)."
+        )
+    entry = found[0]
+    try:
+        version = await asyncio.to_thread(store.read, entry.before if side == "before" else entry.after, path)
+    except checkpoints.CheckpointError as e:
+        raise CommandError(str(e)) from None
+    data = version.data
+    binary = data is not None and b"\0" in data[:8000]
+    return {
+        "available": True,
+        "entry": entry.id,
+        "label": entry.label,
+        "side": side,
+        "path": path,
+        "exists": version.exists,
+        "kind": version.kind,
+        "size": version.size,
+        "binary": binary,
+        "too_large": version.kind != "other" and version.exists and data is None,
+        "content": None if data is None or binary else data.decode("utf-8", "replace"),
+    }
 
 
 async def _step(host: CommandHost, verb: str, force: bool) -> dict[str, Any]:
@@ -353,6 +410,7 @@ async def _mcp_disconnect(host: CommandHost, args: dict[str, Any]) -> dict[str, 
 
 _HANDLERS: dict[str, Callable[[CommandHost, dict[str, Any]], Awaitable[dict[str, Any]]]] = {
     "checkpoints": _checkpoints,
+    "checkpoints.show": _checkpoints_show,
     "undo": _undo,
     "redo": _redo,
     "mode": _mode,

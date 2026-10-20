@@ -96,7 +96,7 @@ const log = h("div", { class: "log", role: "log", "aria-live": "polite" });
 const input = h("textarea", {
   class: "input",
   rows: "3",
-  placeholder: "Ask about the code or request a change (Enter sends, Shift+Enter: new line). /plan <goal> plans a project.",
+  placeholder: "Ask about the code or request a change (Enter sends, Shift+Enter: new line). /plan <goal> plans a project; /undo reverts the last change.",
 });
 const sendButton = button("Send", () => submit(), "primary");
 const stopButton = button("Stop", () => send({ type: "stop" }), "danger");
@@ -242,13 +242,9 @@ function onEvent(event: Record<string, unknown>): void {
     case "progress":
       line(`${String(event.completed)}/${String(event.total)} tasks done`, "dim");
       return;
-    case "files_changed": {
-      const files = (event.files as string[]) ?? [];
-      const block = h("details", { class: "files" }, h("summary", {}, `Changed ${String(event.count)} file(s) — /undo in the terminal reverts them`));
-      block.append(h("ul", {}, ...files.map((f) => h("li", {}, f))));
-      append(block);
+    case "files_changed":
+      filesBlock(event);
       return;
-    }
     case "run_finished": {
       if (event.status !== "completed") {
         const detail = event.detail ? `: ${String(event.detail)}` : "";
@@ -264,6 +260,48 @@ function onEvent(event: Record<string, unknown>): void {
     default:
       return; // run_started, model_call, context_assembled, approval_requested, plan_proposed … (shown elsewhere)
   }
+}
+
+// ── changed files and undo ────────────────────────────────────────────
+
+/** A file name that opens the file; with a checkpoint entry, also a "diff" that opens before ↔ after. */
+function fileItem(path: string, diff?: { entry: string; label: string }): HTMLElement {
+  const open = button(path, () => send({ type: "open", path }), "link");
+  open.title = `Open ${path}`;
+  const item = h("li", {}, open);
+  if (diff) {
+    const show = button("diff", () => send({ type: "diff", entry: diff.entry, path, label: diff.label }), "small");
+    show.title = "Show this change in a diff editor";
+    item.append(" ", show);
+  }
+  return item;
+}
+
+function filesBlock(event: Record<string, unknown>): void {
+  const files = (event.files as string[]) ?? [];
+  const count = Number(event.count ?? files.length);
+  const entry = typeof event.entry === "string" ? event.entry : undefined;
+  const label = String(event.label ?? "");
+  const list = h("ul", {}, ...files.map((f) => fileItem(f, entry ? { entry, label } : undefined)));
+  if (count > files.length) list.append(h("li", { class: "dim" }, `… and ${count - files.length} more`));
+  const details = h("details", { open: "" }, h("summary", {}, `Changed ${count} file(s)`), list);
+  const undo = button("Undo", () => send({ type: "undo", entry }), "small");
+  undo.title = "Revert the files of this change (Kartrix: Undo Last Change)";
+  append(h("div", { class: "files" }, details, h("div", { class: "buttons" }, undo)));
+}
+
+function stepBlock(message: Extract<ToView, { type: "step" }>): void {
+  const block = h("div", { class: "files" }, h("div", { class: "line ok" }, message.text));
+  if (message.restored.length) {
+    block.append(h("details", {}, h("summary", {}, `Restored ${message.restored.length}`), h("ul", {}, ...message.restored.map((f) => fileItem(f)))));
+  }
+  if (message.deleted.length) {
+    block.append(h("details", {}, h("summary", {}, `Deleted ${message.deleted.length}`), h("ul", {}, ...message.deleted.map((f) => h("li", {}, f)))));
+  }
+  for (const error of message.errors) block.append(h("div", { class: "line err" }, `Could not delete ${error}`));
+  const again = message.verb === "undo" ? button("Redo", () => send({ type: "redo" }), "small") : button("Undo", () => send({ type: "undo" }), "small");
+  block.append(h("div", { class: "buttons" }, again));
+  append(block);
 }
 
 // ── approvals ─────────────────────────────────────────────────────────
@@ -403,7 +441,10 @@ window.addEventListener("message", (e: MessageEvent<ToView>) => {
       line(message.text, "err");
       return;
     case "info":
-      line(message.text, "dim");
+      line(message.text, message.level ?? "dim");
+      return;
+    case "step":
+      stepBlock(message);
       return;
     case "cleared":
       log.replaceChildren();

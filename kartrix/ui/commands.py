@@ -99,6 +99,7 @@ def print_help() -> None:
     console.print("  [bold]/undo \\[force][/bold]            — revert the files changed by the last turn/task")
     console.print("  [bold]/redo \\[force][/bold]            — re-apply what /undo reverted")
     console.print("  [bold]/checkpoints[/bold]             — list undo points")
+    console.print("  [bold]/checkpoints show \\[--after] <id> <path>[/bold] — a file before (after) a change")
     console.print("  [bold]/budget[/bold]                  — budget limits and the last run's usage")
     console.print("  [bold]/trace \\[run|last][/bold]        — recent runs, or one run's timeline")
     console.print("  [bold]/memory \\[add \\[--user] <text>|forget <id>][/bold] — long-term memory")

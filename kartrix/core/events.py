@@ -221,6 +221,7 @@ class FilesChanged(_Event):
     label: str
     files: list[str]
     count: int
+    entry: str | None = None  # the checkpoint entry (``checkpoints.show`` reads its file versions)
 
 
 Event = Annotated[

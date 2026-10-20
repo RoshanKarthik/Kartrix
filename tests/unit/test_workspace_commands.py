@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,11 @@ def _console() -> Console:
         ("/undo", ("undo", {"force": False})),
         ("/redo force", ("redo", {"force": True})),
         ("/checkpoints", ("checkpoints", {})),
+        (
+            "/checkpoints show e1 src/a b.py",
+            ("checkpoints.show", {"entry": "e1", "path": "src/a b.py", "side": "before"}),
+        ),
+        ("/checkpoints show --after e1 a.py", ("checkpoints.show", {"entry": "e1", "path": "a.py", "side": "after"})),
         ("/mode", ("mode", {"target": None})),
         ("/mode auto", ("mode", {"target": "auto"})),
         ("/memory", ("memory.list", {})),
@@ -80,7 +86,19 @@ def test_parse(line: str, expected: tuple[str, dict[str, Any]]) -> None:
     assert commands.parse(line) == expected
 
 
-@pytest.mark.parametrize("line", ["/undo now", "/memory add", "/memory add --user", "/memory drop x", "/skills nuke x"])
+@pytest.mark.parametrize(
+    "line",
+    [
+        "/checkpoints show",
+        "/checkpoints show e1",
+        "/checkpoints drop e1 a.py",
+        "/undo now",
+        "/memory add",
+        "/memory add --user",
+        "/memory drop x",
+        "/skills nuke x",
+    ],
+)
 def test_parse_rejects_bad_usage(line: str) -> None:
     with pytest.raises(commands.CommandError, match="Usage"):
         commands.parse(line)
@@ -187,7 +205,63 @@ async def test_checkpoints_off(monkeypatch: pytest.MonkeyPatch) -> None:
         return await commands.run(Host(), name, args)
 
     await command_views.execute(console, "/undo", call)
-    assert "Checkpoints are off: not a git repository" in console.export_text()
+    await command_views.execute(console, "/checkpoints show e1 a.py", call)
+    assert console.export_text().count("Checkpoints are off: not a git repository") == 2
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+async def test_checkpoints_show_reads_a_file_before_and_after_a_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, audited: list[dict[str, Any]]
+) -> None:
+    monkeypatch.setenv("KARTRIX_HOME", str(tmp_path / "home"))
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "app.py").write_bytes(b"print('v1')\n")
+    git = shutil.which("git")
+    assert git
+    store = checkpoints.Checkpoints(root, Path(git))
+    before = store.snapshot()
+    (root / "app.py").write_bytes(b"print('v2')\n")
+    (root / "data.bin").write_bytes(b"\0\1\2")
+    entry = store.record("/ask bump", before, store.snapshot())
+    assert entry is not None
+    monkeypatch.setattr(checkpoints, "current", lambda: store)
+    host = Host()
+
+    listing = await commands.run(host, "checkpoints", {})
+    assert listing["undo"][0]["files"] == ["app.py", "data.bin"]
+    shown = await commands.run(host, "checkpoints.show", {"entry": entry.id, "path": "app.py", "side": "before"})
+    json.dumps(shown)
+    assert (shown["exists"], shown["content"], shown["label"]) == (True, "print('v1')\n", "/ask bump")
+    after = await commands.run(host, "checkpoints.show", {"entry": entry.id[:6], "path": "./app.py", "side": "after"})
+    assert (after["path"], after["content"]) == ("app.py", "print('v2')\n")
+    missing = await commands.run(host, "checkpoints.show", {"entry": entry.id, "path": "data.bin"})
+    assert (missing["side"], missing["exists"], missing["content"]) == ("before", False, None)
+    binary = await commands.run(host, "checkpoints.show", {"entry": entry.id, "path": "data.bin", "side": "after"})
+    assert (binary["binary"], binary["size"], binary["content"]) == (True, 3, None)
+    assert audited == []  # reading is not a change
+
+    for args, error in [
+        ({"entry": entry.id, "path": "../secret.txt"}, "not a file path"),
+        ({"entry": entry.id, "path": str(root / "app.py")}, "not a file path"),
+        ({"entry": "nope", "path": "app.py"}, "No checkpoint with that id"),
+        ({"entry": entry.id, "path": "app.py", "side": "later"}, "Usage"),
+    ]:
+        with pytest.raises(commands.CommandError, match=error):
+            await commands.run(host, "checkpoints.show", args)
+
+    console = _console()
+
+    async def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
+        return await commands.run(host, name, args)
+
+    await command_views.execute(console, f"/checkpoints show {entry.id[:8]} app.py", call)
+    await command_views.execute(console, f"/checkpoints show --after {entry.id[:8]} data.bin", call)
+    await command_views.execute(console, "/checkpoints", call)
+    text = console.export_text()
+    assert "app.py before “/ask bump”" in text and "print('v1')" in text
+    assert "data.bin after “/ask bump”: a binary file (3 bytes)" in text
+    assert entry.id[:8] in text
 
 
 async def test_errors_from_the_server_are_shown() -> None:

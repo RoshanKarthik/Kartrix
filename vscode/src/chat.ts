@@ -5,11 +5,13 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 import { ApiError, KartrixApi, Workspace, findWorkspace } from "./api";
+import { Changes, ChangesHost, Connection } from "./checkpoints";
 import { loadCredentials } from "./credentials";
 import { ApprovalRequestView, FromView, ModelOption, Status, ToView, parseInput } from "./messages";
 import { DEFAULT_SERVER, LocalServer, isLocal, reachable } from "./server";
 
-export class ChatController implements vscode.WebviewViewProvider {
+export class ChatController implements vscode.WebviewViewProvider, ChangesHost {
+  readonly changes = new Changes(this);
   private view: vscode.WebviewView | null = null;
   private api: KartrixApi | null = null;
   private workspace: Workspace | null = null;
@@ -38,8 +40,12 @@ export class ChatController implements vscode.WebviewViewProvider {
     view.onDidDispose(() => (this.view = null));
   }
 
-  private post(message: ToView): void {
+  post(message: ToView): void {
     void this.view?.webview.postMessage(message);
+  }
+
+  get viewVisible(): boolean {
+    return this.view?.visible ?? false;
   }
 
   private setStatus(status: Status): void {
@@ -118,6 +124,14 @@ export class ChatController implements vscode.WebviewViewProvider {
     }
   }
 
+  /** The server and workspace for the open folder; connects first if needed (a diff editor restored at startup). */
+  async connection(): Promise<Connection | null> {
+    if (this.connecting) await this.connecting;
+    else if (!this.api) await this.connect();
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    return this.api && this.workspace && folder ? { api: this.api, workspace: this.workspace, folder: folder.uri } : null;
+  }
+
   // ── messages from the view ─────────────────────────────────────────
 
   private async onMessage(message: FromView): Promise<void> {
@@ -150,6 +164,14 @@ export class ChatController implements vscode.WebviewViewProvider {
         return this.signIn(message.signup);
       case "reconnect":
         return this.connect();
+      case "open":
+        return this.changes.open(message.path);
+      case "diff":
+        return this.changes.diff(message.entry, message.path, message.label);
+      case "undo":
+        return this.changes.step("undo", message.entry);
+      case "redo":
+        return this.changes.step("redo");
     }
   }
 
@@ -158,6 +180,10 @@ export class ChatController implements vscode.WebviewViewProvider {
     if ("error" in parsed) {
       this.post({ type: "info", text: parsed.error });
       return;
+    }
+    if ("command" in parsed) {
+      if (parsed.command === "checkpoints") return this.changes.showCheckpoints();
+      return this.changes.step(parsed.command);
     }
     if (!this.api || !this.workspace) {
       this.post({ type: "error", text: "Not connected to a Kartrix server yet." });
