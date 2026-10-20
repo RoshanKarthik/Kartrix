@@ -30,21 +30,24 @@ If you cannot find the answer in the codebase, say so explicitly.
 NATIVE_TOOLS = [search_codebase, symbol_graph, load_skill, *READ_TOOLS, *WRITE_TOOLS, run_command, remember]
 
 
-def agent_middleware(approval: ApprovalMiddleware | None, **model_kwargs: Any) -> list[AgentMiddleware]:
+def agent_middleware(
+    approval: ApprovalMiddleware | None, *, answer_tool: str | None = None, **model_kwargs: Any
+) -> list[AgentMiddleware]:
     """The middleware stack every tool-using agent gets (first = outermost).
 
     Approval runs outside the audit wrapper, so the audit row shows the command that actually ran.
     The budget check runs inside it, so refused calls are audited, and inside the retry/fallback
     wrappers, so every model attempt is counted. The content guard runs inside audit, so the audit row
     records its findings; the completion guard runs innermost, so a crashing tool becomes an audited
-    ``Error:`` result and an empty or cut-off model turn is retried (``kartrix.agent.reliability``)."""
+    ``Error:`` result and an empty or cut-off model turn is retried (``kartrix.agent.reliability``).
+    ``answer_tool``: the structured-output tool of an agent that answers through one (``ToolStrategy``)."""
     return [
         *get_model_middleware(**model_kwargs),
         *([approval] if approval is not None else []),
         AuditMiddleware(),
         BudgetMiddleware(),
         ContentGuardMiddleware(),
-        CompletionGuardMiddleware(),
+        CompletionGuardMiddleware(answer_tool=answer_tool),
     ]
 
 
@@ -78,7 +81,7 @@ def build_agent(checkpointer, mcp_tools: list | None = None):
     if settings.agents.architecture == "single":
         return build_single_agent(checkpointer, mcp_tools)
     graph = AgentGraph(
-        middleware=lambda approval: agent_middleware(approval),
+        middleware=agent_middleware,
         approval=ApprovalMiddleware,
         mcp_tools=mcp_tools,
         skills=[load_skill],

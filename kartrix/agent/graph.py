@@ -246,7 +246,8 @@ class AgentGraph:
             llm, tools=coder_tools, system_prompt=CODER_PROMPT + extra, middleware=middleware(approval())
         )
         self.reviewer = create_agent(
-            llm, tools=reviewer_tools, system_prompt=REVIEWER_PROMPT, middleware=middleware(approval(refuse=REVIEW_REFUSED)),
+            llm, tools=reviewer_tools, system_prompt=REVIEWER_PROMPT,
+            middleware=middleware(approval(refuse=REVIEW_REFUSED), answer_tool=ReviewVerdict.__name__),
             response_format=response_format_for(ReviewVerdict),
         )  # fmt: skip
         self.router = create_agent(
@@ -316,8 +317,14 @@ class AgentGraph:
         emit(AgentStep(agent="reviewer", status="started"))
         out = await self.reviewer.ainvoke({"messages": [HumanMessage(prompt)]})
         verdict: ReviewVerdict | None = out.get("structured_response")
-        approved = verdict.approved if verdict is not None else False
-        notes = "\n".join(f"- {i}" for i in verdict.issues) if verdict is not None else "no verdict (stopped)"
+        if verdict is not None:
+            approved, notes = verdict.approved, "\n".join(f"- {i}" for i in verdict.issues)
+        else:  # stopped, or the model kept answering in text: what it wrote is the best feedback there is
+            logger.warning("Reviewer finished without a verdict", extra={"stopped": _stopped()})
+            approved = False
+            last = next((m for m in reversed(out.get("messages", [])) if isinstance(m, AIMessage)), None)
+            wrote = _text(last.content).strip() if last is not None and not last.tool_calls else ""
+            notes = "no verdict (stopped)" if _stopped() else wrote or "no verdict"
         emit(AgentStep(agent="reviewer", status="finished", summary="approved" if approved else f"issues:\n{notes}"))
         if approved and state.get("review_notes"):
             await self._learn(_request(state), state["review_notes"])

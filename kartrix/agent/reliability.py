@@ -10,6 +10,8 @@ unexpected exception aborts the whole run.
 
 - an empty or cut-off turn without tool calls → the empty message is dropped and the model is
   nudged to continue (at most ``agents.max_nudges`` times per request);
+- an agent that answers through a tool (structured output) ending its turn in text → nudged to
+  call that tool;
 - unparseable tool calls → the model is told what failed and asked to call the tool again;
 - a tool that raises → an ``Error: ...`` tool result the model can react to, instead of a crash.
 
@@ -45,6 +47,14 @@ LENGTH_EMPTY_NUDGE = (
     "and act: call the next tool you need, or write your final report now."
 )
 LENGTH_PARTIAL_NUDGE = "Your reply was cut off by the output limit. Continue exactly where you stopped."
+
+
+def answer_tool_nudge(tool: str) -> str:
+    """For an agent that answers through a tool (structured output): it ended its turn in plain text."""
+    return (
+        f"You ended your turn without calling a tool. Don't answer in text: call the next tool you need, or, if "
+        f"you are done, give your final answer by calling the {tool} tool now."
+    )
 
 
 def text_of(content: Any) -> str:
@@ -90,8 +100,9 @@ def _nudges_since_request(messages: list[AnyMessage]) -> int:
     return count
 
 
-def _nudge_for(message: AIMessage) -> str | None:
-    """What to tell the model about a final turn that isn't a usable answer (None: it is fine)."""
+def _nudge_for(message: AIMessage, answer_tool: str | None = None) -> str | None:
+    """What to tell the model about a final turn that isn't a usable answer (None: it is fine). An agent that
+    answers through ``answer_tool`` has no usable answer in text at all."""
     if message.tool_calls:
         return None
     if message.invalid_tool_calls:
@@ -103,24 +114,31 @@ def _nudge_for(message: AIMessage) -> str | None:
             "arguments that match its schema."
         )
     text = text_of(message.content).strip()
+    if answer_tool is not None:
+        return answer_tool_nudge(answer_tool)
     if _cut_off(message):
         return LENGTH_PARTIAL_NUDGE if text else LENGTH_EMPTY_NUDGE
     return None if text else EMPTY_NUDGE
 
 
 class CompletionGuardMiddleware(AgentMiddleware):
-    """Recover from empty/cut-off model turns, unparseable tool calls and crashing tools (module docstring)."""
+    """Recover from empty/cut-off model turns, unparseable tool calls and crashing tools (module docstring).
 
-    def __init__(self, max_nudges: int | None = None) -> None:
+    ``answer_tool``: the structured-output tool of an agent with a ``ToolStrategy`` response format. A turn that
+    ends in text there leaves the agent without its answer — some models ignore the forced tool choice — so it
+    is nudged to call that tool."""
+
+    def __init__(self, max_nudges: int | None = None, answer_tool: str | None = None) -> None:
         super().__init__()
         self.max_nudges = settings.agents.max_nudges if max_nudges is None else max_nudges
+        self.answer_tool = answer_tool
 
     def _check(self, state: Any) -> dict[str, Any] | None:
         messages: list[AnyMessage] = state.get("messages", [])
-        if not messages or not isinstance(messages[-1], AIMessage):
+        if not messages or not isinstance(messages[-1], AIMessage) or state.get("structured_response") is not None:
             return None
         last = messages[-1]
-        nudge = _nudge_for(last)
+        nudge = _nudge_for(last, self.answer_tool)
         if nudge is None:
             return None
         budget = current_budget()
@@ -135,7 +153,9 @@ class CompletionGuardMiddleware(AgentMiddleware):
             return None
         logger.info("Nudging the model to continue", extra={"nudge": used + 1, "finish_reason": _finish_reason(last)})
         update: list[AnyMessage | RemoveMessage] = []
-        keep = bool(text_of(last.content).strip()) and nudge == LENGTH_PARTIAL_NUDGE
+        # A cut-off answer is continued; a text answer where a tool call was due holds the reasoning behind it.
+        kept = {LENGTH_PARTIAL_NUDGE, *([answer_tool_nudge(self.answer_tool)] if self.answer_tool else [])}
+        keep = bool(text_of(last.content).strip()) and nudge in kept
         if not keep and last.id:  # an empty turn only confuses the next call
             update.append(RemoveMessage(id=last.id))
         update.append(HumanMessage(nudge, name=NUDGE_NAME))

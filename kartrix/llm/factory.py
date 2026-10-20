@@ -80,7 +80,7 @@ def _build_chat_model(provider: str, model: str, **kwargs: Any) -> BaseChatModel
     timeout = settings.llm.timeout
     kwargs.setdefault("max_tokens", settings.llm.max_output_tokens)
     if provider == "nvidia":
-        from langchain_nvidia_ai_endpoints import ChatNVIDIA
+        from kartrix.llm.nim import ChatNVIDIA  # recovers tool calls Nemotron writes as text
 
         if "max_tokens" in kwargs:
             kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
