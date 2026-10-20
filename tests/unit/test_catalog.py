@@ -186,6 +186,20 @@ def test_openai_compatible_providers(provider: str, host: str, monkeypatch: pyte
         factory._build_chat_model(provider, "some/model")
 
 
+def test_shipped_default_chain_is_listed_and_free() -> None:
+    llm = settings.llm
+    called = {
+        (llm.provider, llm.model),
+        (llm.provider, llm.effective_router_model),
+        (llm.provider, llm.effective_judge_model),
+    } | {(fb.provider, fb.model) for fb in llm.fallbacks}
+    listed = {(m.provider, m.model) for m in catalog.entries()}
+    assert called <= listed  # every model a default run can call is pickable and priced
+    for _, model in called:
+        price = settings.budgets.prices[model]
+        assert (price.input, price.output) == (0, 0)
+
+
 def test_shipped_free_models_are_flagged_and_free() -> None:
     by_id = {m.id: m for m in catalog.list_models()}
     for model_id in ("groq-gpt-oss-120b", "gemini-2.5-flash", "nemotron-ultra-free", "laguna-s-free"):

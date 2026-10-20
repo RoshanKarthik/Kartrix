@@ -18,9 +18,9 @@ semantic_cache:                 # URL (with password) comes from REDIS_URL in .e
 
 llm:
   provider: nvidia              # nvidia | huggingface | openai | anthropic | groq | openrouter | gemini
-  model: nvidia/nemotron-3-super-120b-a12b
-  judge_model: openai/gpt-oss-20b   # cheaper model used only for LLM-as-judge
-  router_model: openai/gpt-oss-20b  # cheap model that routes each request (chat / question / change)
+  model: nvidia/nemotron-3.5-super-vl-120b-a12b
+  judge_model: nvidia/nemotron-3.5-lightning-30b-a3b   # cheaper model used only for LLM-as-judge
+  router_model: nvidia/nemotron-3.5-lightning-30b-a3b  # cheap model that routes each request (chat / question / change)
   timeout: 90                   # seconds per request
   max_output_tokens: 16384      # per call, thinking included (reasoning models return nothing when it's too small)
   retry:                        # transient errors only (timeouts, 429, 5xx)
@@ -29,8 +29,10 @@ llm:
     backoff_factor: 2.0
     max_delay: 30
   fallbacks:                    # tried in order when the primary still fails after retries; [] = none
-    - provider: nvidia          # different NIM model: free, separate capacity
-      model: google/gemma-4-31b-it
+    - provider: nvidia          # different NIM models: free, separate capacity
+      model: nvidia/nemotron-3-ultra-550b-a55b
+    - provider: nvidia
+      model: nvidia/nemotron-3.5-lightning-30b-a3b
     - provider: huggingface     # via the OpenAI-compatible HF router (monthly free credits)
       model: Qwen/Qwen3-Coder-30B-A3B-Instruct
 
@@ -56,23 +58,36 @@ models:                         # the model picker (`kartrix models`, GET /v1/mo
       description: Billed to your own provider account; no Kartrix limits.
       own_key: true
   catalog:
-    - id: nemotron-super
-      name: Nemotron 3 Super 120B
+    - id: nemotron-super        # id kept when NIM retired Nemotron 3 Super, so saved picks still work
+      name: Nemotron 3.5 Super 120B
       provider: nvidia
-      model: nvidia/nemotron-3-super-120b-a12b
+      model: nvidia/nemotron-3.5-super-vl-120b-a12b
       tier: powerful
       description: Default. Reasoning model on NVIDIA NIM.
+    - id: nemotron-ultra
+      name: Nemotron 3 Ultra 550B
+      provider: nvidia
+      model: nvidia/nemotron-3-ultra-550b-a55b
+      tier: powerful
+      description: Largest NVIDIA NIM model; first fallback.
+    - id: nemotron-lightning
+      name: Nemotron 3.5 Lightning 30B
+      provider: nvidia
+      model: nvidia/nemotron-3.5-lightning-30b-a3b
+      tier: unlimited
+      description: Small and fast; also routes requests.
     - id: gemma-4-31b
       name: Gemma 4 31B
       provider: nvidia
       model: google/gemma-4-31b-it
       tier: optimized
+      description: Often times out on the NIM free tier.
     - id: gpt-oss-20b
       name: gpt-oss 20B
       provider: nvidia
       model: openai/gpt-oss-20b
       tier: unlimited
-      description: Small and fast; also routes requests.
+      description: Small; often slow on the NIM free tier.
     - id: qwen3-coder-30b
       name: Qwen3 Coder 30B
       provider: huggingface
@@ -230,7 +245,9 @@ budgets:                        # a run stops at the next model/tool call once a
     max_tool_calls: 600
     max_seconds: 7200
   prices:                       # USD per million tokens; models not listed count tokens but no cost
-    nvidia/nemotron-3-super-120b-a12b: {input: 0, output: 0}   # NVIDIA free tier
+    nvidia/nemotron-3.5-super-vl-120b-a12b: {input: 0, output: 0}   # NVIDIA free tier
+    nvidia/nemotron-3-ultra-550b-a55b: {input: 0, output: 0}
+    nvidia/nemotron-3.5-lightning-30b-a3b: {input: 0, output: 0}
     openai/gpt-oss-20b: {input: 0, output: 0}
     google/gemma-4-31b-it: {input: 0, output: 0}
     Qwen/Qwen3-Coder-30B-A3B-Instruct: {input: 0, output: 0}   # Hugging Face monthly free credits

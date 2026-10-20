@@ -88,7 +88,7 @@ class LLMModelRef(_Section):
 
 class LLMSettings(_Section):
     provider: LLMProvider = "nvidia"
-    model: str = "nvidia/nemotron-3-super-120b-a12b"
+    model: str = "nvidia/nemotron-3.5-super-vl-120b-a12b"
     judge_model: str | None = None  # cheaper model for LLM-as-judge; falls back to `model`
     router_model: str | None = None  # cheap model that routes each request; falls back to the judge model
     timeout: float = Field(90.0, gt=0)  # per request; free-tier models can hang
@@ -99,7 +99,8 @@ class LLMSettings(_Section):
     # Tried in order when the primary still fails after its retries; [] disables fallback.
     fallbacks: list[LLMModelRef] = Field(
         default_factory=lambda: [
-            LLMModelRef(provider="nvidia", model="google/gemma-4-31b-it"),
+            LLMModelRef(provider="nvidia", model="nvidia/nemotron-3-ultra-550b-a55b"),
+            LLMModelRef(provider="nvidia", model="nvidia/nemotron-3.5-lightning-30b-a3b"),
             LLMModelRef(provider="huggingface", model="Qwen/Qwen3-Coder-30B-A3B-Instruct"),
         ]
     )

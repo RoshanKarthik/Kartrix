@@ -62,7 +62,7 @@ flowchart LR
     REPL & HL --> CORE["CoreSession<br/>typed event stream"]
     CORE --> G["LangGraph StateGraph<br/>(Postgres checkpointer)"]
     G --> MW["middleware on every agent:<br/>fallback chain + circuit breaker · retry ·<br/>approvals · audit · budget · injection guard ·<br/>completion guard"]
-    MW --> LLM["LLMs<br/>NIM Nemotron 120B · gpt-oss-20b router<br/>fallbacks: Gemma, Qwen (HF)"]
+    MW --> LLM["LLMs<br/>NIM Nemotron 3.5 Super 120B · Nemotron Lightning router<br/>fallbacks: Nemotron Ultra, Lightning, Qwen (HF)"]
     G --> TOOLS["tools: search_codebase · symbol_graph ·<br/>read/edit/write/delete file · grep · glob ·<br/>run_command · remember · MCP"]
     TOOLS --> POL["command policy<br/>(allow / ask / deny, modes)"] --> SBX["OS sandbox<br/>AppContainer · bubblewrap/Landlock ·<br/>Seatbelt · Docker"]
     TOOLS --> RAG["hybrid retrieval<br/>pgvector HNSW + full-text, weighted RRF<br/>→ cross-encoder rerank<br/>+ code graph (calls/imports)"]
