@@ -18,7 +18,8 @@
 - **code** — the *coder* subagent: read/write tools and ``run_command`` (with the approval
   middleware: a command that needs approval pauses the whole graph until the user answers).
 - **review** — the *reviewer* subagent: an independent check of the change against the request
-  in a fresh context (it can read files and run the tests), with a structured verdict. A rejected
+  in a fresh context (it can read files and run the tests; its brief says which tests the project has, or that
+  it has none — ``kartrix.context.project_tests``), with a structured verdict. A rejected
   change goes back to the coder with the reviewer's notes (at most ``agents.max_review_rounds``).
 - **respond** — the main model answers the user from what the subagents reported.
 
@@ -31,6 +32,7 @@ the previous step's report and the request, last — not each other's tool noise
 
 from __future__ import annotations
 
+import asyncio
 import operator
 import re
 from typing import Annotated, Any, Literal, TypedDict
@@ -46,6 +48,7 @@ from kartrix.agent.reliability import CompletionGuardMiddleware, final_text
 from kartrix.agent.streaming import AnswerStream
 from kartrix.agent.tools import remember, search_codebase, symbol_graph
 from kartrix.config import settings
+from kartrix.context.project_tests import TestSurvey, review_note, survey_tests
 from kartrix.core.events import AgentStep, Event, ToolCallFinished, ToolCallStarted, collecting, emit
 from kartrix.llm.factory import get_chat_model, get_model_middleware, response_format_for
 from kartrix.memory import long_term
@@ -132,7 +135,10 @@ or user preference with remember.
 
 REVIEWER_PROMPT = f"""You are the reviewer: you independently check a change another agent made.
 Read the changed files and run the project's tests with run_command (one program, no shell) in every review,
-including after a fix — never approve, or say the tests can't run, without having run them. Approve
+including after a fix — never approve, or say the tests can't run, without having run them. Only when the
+review request says the project has no tests and no test command: don't search for tests — check the change
+by reading it (and, where it helps, by running the changed program or module), then give your verdict; a missing
+test suite is not by itself an issue. Approve
 only if the change does everything that was asked, is correct, keeps the existing behaviour and style,
 the tests pass, and no unrelated files (scratch scripts, notes, debug output) were added. For a rename, grep the
 whole repository (docs and README included) for the old name. Otherwise list
@@ -309,10 +315,12 @@ class AgentGraph:
 
     async def review(self, state: AgentState) -> dict[str, Any]:
         files = "\n".join(f"- {f}" for f in state.get("changed_files", [])) or "(none)"
+        tests = review_note(await self._survey_tests())
         prompt = (
             f"Request: {_request(state)}\n\nThe coder's report:\n{state.get('change_report', '')}\n\n"
             f"Files the coder changed (from its tool calls):\n{files}\n\n"
-            "Check the change and give your verdict."
+            + (f"{tests}\n\n" if tests else "")
+            + "Check the change and give your verdict."
         )
         emit(AgentStep(agent="reviewer", status="started"))
         out = await self.reviewer.ainvoke({"messages": [HumanMessage(prompt)]})
@@ -356,6 +364,15 @@ class AgentGraph:
             answer = "\n\n".join(parts) or "Sorry — the model returned no answer. Please try again."
         emit(AgentStep(agent="responder", status="finished"))
         return {"messages": [AIMessage(answer)], "steps": ["responder"]}
+
+    @staticmethod
+    async def _survey_tests() -> TestSurvey:
+        """Checked before every review (the coder may have just added tests); a failed check says nothing."""
+        try:
+            return await asyncio.to_thread(survey_tests)
+        except Exception as e:
+            logger.warning("Could not check the project for tests", extra={"error": repr(e)})
+            return TestSurvey()
 
     @staticmethod
     async def _learn(request: str, notes: str) -> None:
