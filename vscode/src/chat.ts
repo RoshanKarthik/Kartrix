@@ -145,15 +145,15 @@ export class ChatController implements vscode.WebviewViewProvider, ChangesHost {
       case "send":
         return this.send(message.text);
       case "approval":
-        await this.api?.answerApproval(
-          message.runId,
-          message.requestId,
-          message.decisions.map((d) => ({ type: d.type, command: d.command ?? null, message: d.message ?? null })),
+        return this.answered(
+          this.api?.answerApproval(
+            message.runId,
+            message.requestId,
+            message.decisions.map((d) => ({ type: d.type, command: d.command ?? null, message: d.message ?? null })),
+          ),
         );
-        return;
       case "plan_review":
-        await this.api?.answerPlanReview(message.runId, message.requestId, message.approved, message.feedback);
-        return;
+        return this.answered(this.api?.answerPlanReview(message.runId, message.requestId, message.approved, message.feedback));
       case "stop":
         return this.stop();
       case "new":
@@ -172,6 +172,17 @@ export class ChatController implements vscode.WebviewViewProvider, ChangesHost {
         return this.changes.step("undo", message.entry);
       case "redo":
         return this.changes.step("redo");
+    }
+  }
+
+  /** An answer sent from the view. 404: the question was answered elsewhere (another window, the terminal) or the
+   * run stopped meanwhile — not an error. */
+  private async answered(request: Promise<void> | undefined): Promise<void> {
+    try {
+      await request;
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 404)) throw e;
+      this.post({ type: "info", text: "That question was already answered (or the run ended)." });
     }
   }
 

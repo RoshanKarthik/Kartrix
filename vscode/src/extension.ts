@@ -8,7 +8,8 @@ import { LocalServer } from "./server";
 
 let server: LocalServer | null = null;
 
-export function activate(context: vscode.ExtensionContext): void {
+/** Returns the chat controller (the extension's exports), so an extension-host test can drive it. */
+export function activate(context: vscode.ExtensionContext): ChatController {
   const output = vscode.window.createOutputChannel("Kartrix");
   server = new LocalServer((line) => output.appendLine(line));
   const chat = new ChatController(context, server, output);
@@ -29,6 +30,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (e.affectsConfiguration("kartrix.serverUrl")) void chat.connect();
     }),
   );
+  return chat;
 }
 
 export function deactivate(): void {

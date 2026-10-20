@@ -7,3 +7,4 @@ esbuild.mjs
 tsconfig.json
 **/*.map
 *.vsix
+scripts/**

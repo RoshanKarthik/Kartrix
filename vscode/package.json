@@ -133,6 +133,7 @@
     "typecheck": "tsc --noEmit -p .",
     "test": "node esbuild.mjs --tests && node --test \"out/test/*.test.js\"",
     "check": "npm run typecheck && npm test",
+    "smoke:editor": "node esbuild.mjs && node scripts/run-editor-smoke.mjs",
     "package": "node esbuild.mjs --production && vsce package --no-dependencies --skip-license --out kartrix.vsix",
     "vscode:prepublish": "node esbuild.mjs --production"
   },

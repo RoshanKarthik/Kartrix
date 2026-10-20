@@ -115,6 +115,9 @@ input.addEventListener("keydown", (e) => {
 let busy = false;
 let answer: { el: HTMLElement; text: string } | null = null; // the streamed answer of the current run
 const tools = new Map<string, HTMLElement>(); // tool call id → its line
+type Lock = (note: string) => void;
+const openRequests = new Map<string, Lock>(); // approval tool call id → lock its card (answered elsewhere, run ended)
+const openPlans = new Set<Lock>(); // the same for open plan cards
 
 function submit(): void {
   const text = input.value.trim();
@@ -217,6 +220,7 @@ function onEvent(event: Record<string, unknown>): void {
       return;
     }
     case "approval_resolved": {
+      openRequests.get(String(event.tool_call_id))?.("answered elsewhere");
       const decision = String(event.decision);
       const by = event.by === "policy" ? " by policy" : "";
       const label: Record<string, string> = {
@@ -229,6 +233,7 @@ function onEvent(event: Record<string, unknown>): void {
       return;
     }
     case "plan_reviewed":
+      for (const lock of [...openPlans]) lock("answered elsewhere");
       line(event.approved ? "✓ plan approved" : "✗ plan sent back for changes", event.approved ? "ok" : "warn");
       return;
     case "task_started":
@@ -309,10 +314,18 @@ function stepBlock(message: Extract<ToView, { type: "step" }>): void {
 function approvalCard(runId: string, requestId: string, requests: ApprovalRequestView[]): void {
   const decisions: (DecisionView | null)[] = requests.map(() => null);
   const card = append(h("div", { class: "card approval" }, h("div", { class: "card-title" }, "Approval needed")));
+  const notes: HTMLElement[] = [];
+  const lock: Lock = (note) => {
+    card.classList.add("answered");
+    card.querySelectorAll("button, textarea, input").forEach((el) => ((el as HTMLButtonElement).disabled = true));
+    notes.forEach((el, i) => {
+      if (decisions[i] === null && note) el.textContent = note;
+    });
+    requests.forEach((r) => openRequests.delete(r.tool_call_id));
+  };
   const finish = () => {
     if (decisions.some((d) => d === null)) return;
-    card.classList.add("answered");
-    card.querySelectorAll("button, textarea").forEach((el) => ((el as HTMLButtonElement).disabled = true));
+    lock("");
     send({ type: "approval", runId, requestId, decisions: decisions as DecisionView[] });
   };
   requests.forEach((request, i) => {
@@ -322,6 +335,8 @@ function approvalCard(runId: string, requestId: string, requests: ApprovalReques
     editor.hidden = true;
     const reason = h("input", { class: "reason", type: "text", placeholder: "Why not? (optional, tells the agent)" });
     const decided = h("div", { class: "decided" });
+    notes.push(decided);
+    openRequests.set(request.tool_call_id, lock);
     const decide = (decision: DecisionView, label: string) => {
       decisions[i] = decision;
       row.querySelectorAll("button, textarea, input").forEach((el) => ((el as HTMLButtonElement).disabled = true));
@@ -391,12 +406,19 @@ function planCard(runId: string, requestId: string, plan: Record<string, unknown
       feedback,
     ),
   );
-  const answer = (approved: boolean) => {
+  const note = h("div", { class: "decided" });
+  const lock: Lock = (text) => {
     card.classList.add("answered");
     card.querySelectorAll("button, textarea").forEach((el) => ((el as HTMLButtonElement).disabled = true));
+    if (text) note.textContent = text;
+    openPlans.delete(lock);
+  };
+  openPlans.add(lock);
+  const answer = (approved: boolean) => {
+    lock("");
     send({ type: "plan_review", runId, requestId, approved, feedback: approved ? "" : feedback.value.trim() });
   };
-  card.append(h("div", { class: "buttons" }, button("Approve and run", () => answer(true), "primary"), button("Re-plan", () => answer(false))));
+  card.append(h("div", { class: "buttons" }, button("Approve and run", () => answer(true), "primary"), button("Re-plan", () => answer(false))), note);
 }
 
 // ── messages from the extension ───────────────────────────────────────
@@ -415,6 +437,7 @@ window.addEventListener("message", (e: MessageEvent<ToView>) => {
       stopButton.hidden = !busy;
       sendButton.disabled = busy || input.disabled;
       if (!busy) {
+        for (const lock of [...openRequests.values(), ...openPlans]) lock("the run ended");
         answer = null;
         tools.clear();
         input.focus();

@@ -15,9 +15,11 @@ server instead of starting their own. Sandboxed commands never see it (it is a s
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -62,15 +64,17 @@ def ensure() -> str:
         if _server is not None:
             return os.environ["DATABASE_URL"]
         try:
-            import embedded_postgres
+            import embedded_postgres  # noqa: F401 — installed? (used by the helpers below)
             import fasteners
         except ImportError as e:  # a trimmed install
             raise EmbeddedDatabaseError(f"the built-in database isn't installed ({e}); set DATABASE_URL") from e
         base = root()
         try:
             with fasteners.InterProcessLock(str(base / ".setup.lock")):
-                server = embedded_postgres.get_server(base / "data", cleanup_mode="stop")
+                _forget_dead_users(base / "data")
+                server = _start_or_join(base / "data")
                 password = _set_up(server, base)
+                _ensure_answering(server, password)
         except EmbeddedDatabaseError:
             raise
         except Exception as e:
@@ -117,6 +121,102 @@ def _set_up(server: Any, base: Path) -> str:
 
     _run_async(run())
     return password
+
+
+RECOVERY_SECONDS = 300.0
+
+
+def _start_or_join(pgdata: Path, wait_seconds: float = RECOVERY_SECONDS) -> Any:
+    """The library's handle on the server, started if needed. ``pg_ctl start`` gets only 10 s from the library, and
+    after an unclean shutdown (a crash, a power cut) PostgreSQL first recovers — that took 36 s here — so on a
+    timeout wait for the server to say it is ready, then join it."""
+    import subprocess
+
+    import embedded_postgres
+    from embedded_postgres.postgres_server import PostgresServer
+    from embedded_postgres.utils import PostmasterInfo
+
+    try:
+        return embedded_postgres.get_server(pgdata, cleanup_mode="stop")
+    except subprocess.TimeoutExpired:
+        logger.info("Built-in database is recovering from an unclean shutdown; waiting for it")
+        resolved = pgdata.expanduser().resolve()
+        PostgresServer._instances.pop(resolved, None)  # the library keeps the half-made handle; start over
+        deadline = time.monotonic() + wait_seconds
+        while time.monotonic() < deadline:
+            info = PostmasterInfo.read_from_pgdata(resolved)
+            if info is not None and info.is_running() and info.status == "ready":
+                return embedded_postgres.get_server(pgdata, cleanup_mode="stop")
+            time.sleep(1)
+        raise
+
+
+def _forget_dead_users(pgdata: Path) -> None:
+    """Drop processes that no longer exist from the library's list of the server's users. A Kartrix process that
+    was killed never removes itself, and the server is only stopped when that list empties: it would run forever."""
+    from embedded_postgres.utils import process_is_running
+
+    users = pgdata / ".handle_pids.json"
+    try:
+        pids = json.loads(users.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(pids, list):
+        return
+    alive = [pid for pid in pids if isinstance(pid, int) and process_is_running(pid)]
+    if alive != pids:
+        users.write_text(json.dumps(alive), encoding="utf-8")
+        logger.info("Forgot built-in database users that no longer run", extra={"gone": len(pids) - len(alive)})
+
+
+def _answers(server: Any, password: str) -> bool:
+    """True when the server accepts a login and a query within a few seconds."""
+
+    async def probe() -> None:
+        import asyncpg
+
+        conn = await asyncpg.connect(
+            **_connect_args(server.get_postmaster_info()), user=ROLE, password=password, database=DATABASE, timeout=10
+        )
+        try:
+            await conn.fetchval("SELECT 1")
+        finally:
+            await conn.close()
+
+    try:
+        _run_async(probe())
+    except Exception as e:
+        logger.warning("Built-in database doesn't answer", extra={"error": f"{type(e).__name__}: {e}"})
+        return False
+    return True
+
+
+def _restart(server: Any) -> None:
+    """Stop the server at once (it doesn't serve anyone) and start it again."""
+    import embedded_postgres
+
+    pg_ctl = vars(embedded_postgres)["pg_ctl"]  # generated at import time by the library
+    try:
+        pg_ctl(["-w", "stop", "-m", "immediate"], pgdata=server.pgdata, timeout=60)
+    except Exception as e:  # pg_ctl couldn't: end the postmaster itself
+        logger.warning("pg_ctl stop failed; ending the server process", extra={"error": repr(e)})
+        process = server.get_postmaster_info().process
+        process.kill()
+        process.wait(10)
+    with server._lock:
+        server.ensure_postgres_running()
+
+
+def _ensure_answering(server: Any, password: str, answers: Any = _answers, restart: Any = _restart) -> None:
+    """A server joined after a crash can be running but unable to serve: on Windows a crash-restart can leave
+    PostgreSQL unable to start new backends ("could not reserve shared memory region ... error code 487"), so every
+    connection is dropped. Restart it once; still nothing means the user has to look at the log."""
+    if answers(server, password):
+        return
+    logger.warning("Restarting the built-in database")
+    restart(server)
+    if not answers(server, password):
+        raise EmbeddedDatabaseError(f"the built-in database doesn't accept connections (log: {server.pgdata / 'log'})")
 
 
 def _connect_args(info: Any) -> dict[str, Any]:

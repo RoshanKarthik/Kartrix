@@ -362,14 +362,12 @@ class BudgetMiddleware(AgentMiddleware):
         _account(request, response, started)
         return response
 
-    async def awrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
-    ) -> ToolMessage | Command[Any]:
+    @staticmethod
+    def _gate(request: ToolCallRequest) -> ToolMessage | None:
+        """A refusal when the run's budget is spent, else None (and the call is counted)."""
         budget = _current.get()
         if budget is None:
-            return await handler(request)
+            return None
         if reason := budget.check():
             audit.note(budget=reason)
             return _refusal(request, f"Error: stopped — {reason}. The tool was not run.")
@@ -383,4 +381,19 @@ class BudgetMiddleware(AgentMiddleware):
                 "up; the tool was not run. Don't call more tools: tell the user what you did and what is left.",
             )
         budget.add_tool_call()
-        return await handler(request)
+        return None
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        # Synchronous agents too (the planner): without this hook a tool call there raised NotImplementedError.
+        return self._gate(request) or handler(request)
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        return self._gate(request) or await handler(request)

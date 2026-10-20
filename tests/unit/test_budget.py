@@ -15,6 +15,7 @@ from langchain.tools import tool
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from pydantic import BaseModel
 
 from kartrix.config import BudgetLimits, ModelPrice
 from kartrix.security.audit import classify_outcome
@@ -162,6 +163,37 @@ async def test_tool_call_limit_refuses_then_allows_one_wrap_up_then_stops() -> N
     assert model.calls == 4  # the 4th call was the wrap-up chance; the 5th never happened
     assert messages[-1].content.startswith("Stopped: tool-call budget reached (2 calls)")
     assert b.exhausted()
+
+
+class _Plan(BaseModel):
+    name: str
+
+
+def test_a_synchronous_agent_survives_a_tool_it_was_not_given() -> None:
+    """The planner runs its agent synchronously with no tools; a model that calls one anyway went through
+    BudgetMiddleware, which had only the async hook: NotImplementedError and a failed /plan (seen from VS Code)."""
+    from langchain.agents.structured_output import ToolStrategy
+
+    script = [
+        AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"path": "app.py"}, "id": "x1"}]),
+        AIMessage(content="", tool_calls=[{"name": "_Plan", "args": {"name": "todo"}, "id": "x2"}]),
+    ]
+    model = _FakeModel(messages=iter(script))
+    agent = create_agent(model, tools=[], response_format=ToolStrategy(_Plan), middleware=[BudgetMiddleware()])
+    b = _budget()
+    with budget_scope(b):
+        result = agent.invoke({"messages": [HumanMessage("plan")]})
+    assert result["structured_response"] == _Plan(name="todo")
+
+
+def test_tool_call_limit_applies_to_synchronous_agents_too() -> None:
+    ran.clear()
+    agent, _ = _agent([_call(1), _call(2), AIMessage("done")])
+    b = _budget(max_tool_calls=1)
+    with budget_scope(b):
+        messages = agent.invoke({"messages": [HumanMessage("go")]})["messages"]
+    assert len(ran) == 1 and b.tool_calls == 1
+    assert any(isinstance(m, ToolMessage) and m.status == "error" and "budget" in str(m.content) for m in messages)
 
 
 async def test_wrap_up_answer_ends_the_run_normally() -> None:

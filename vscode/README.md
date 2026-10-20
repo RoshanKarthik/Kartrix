@@ -41,6 +41,11 @@ npm ci
 npm run check     # type-check and unit tests
 npm run build     # dist/extension.js and dist/webview.js
 npm run package   # kartrix.vsix
+npm run smoke:editor -- <repository>   # in a real VS Code (separate profile): connect, a question, an approval, /plan
 ```
+
+`smoke:editor` needs a running `kartrix serve` (or the CLI on `PATH` to start one), a login (`kartrix login`) and a
+model key; it uses the installed VS Code (`VSCODE_EXE` to pick another) with its own profile and extensions folder,
+and prints a PASS/FAIL list.
 
 Press F5 in this folder (with a launch configuration for an extension host) or install the `.vsix` to try it.
