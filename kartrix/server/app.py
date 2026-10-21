@@ -1,6 +1,6 @@
-"""The HTTP API (FastAPI). Every route but sign-up, login and health needs a bearer token, and
-everything a user can reach — workspaces, runs, their feeds and questions — is checked to be theirs;
-someone else's id answers 404, exactly like an id that doesn't exist.
+"""The HTTP API (FastAPI), plus the web UI's files at ``/`` (:mod:`kartrix.web`). Every route but sign-up, login
+and health needs a bearer token, and everything a user can reach — workspaces, runs, their feeds and questions — is
+checked to be theirs; someone else's id answers 404, exactly like an id that doesn't exist.
 
 Routes (all JSON, under ``/v1``):
 
@@ -32,6 +32,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select, update
 
+from kartrix import web
 from kartrix.config import settings
 from kartrix.db.engine import dispose_engine, session_scope
 from kartrix.db.models import Run, RunEvent, Session, User, Workspace
@@ -39,6 +40,7 @@ from kartrix.memory.session import InvalidSessionIdError, validate_session_id
 from kartrix.observability.logger import get_logger
 from kartrix.paths import user_data_dir
 from kartrix.server import auth
+from kartrix.server.hosts import LOOPBACK, LoopbackHostsOnly
 from kartrix.server.protocol import Decision, PlanReviewOp, RunOp
 from kartrix.server.workers import FeedItem, PoolError, WorkerPool
 
@@ -189,7 +191,10 @@ def server_data_dir() -> Path:
     return path.resolve()
 
 
-def create_app(pool: WorkerPool | None = None) -> FastAPI:
+def create_app(pool: WorkerPool | None = None, *, loopback_only: bool = False) -> FastAPI:
+    """The app. ``loopback_only``: answer only requests addressed to a loopback name (:mod:`kartrix.server.hosts`)
+    — set by ``kartrix serve`` when it listens on 127.0.0.1."""
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         workers = pool or WorkerPool(server_data_dir())
@@ -214,6 +219,9 @@ def create_app(pool: WorkerPool | None = None) -> FastAPI:
         return JSONResponse({"detail": exc.detail}, status_code=exc.status)
 
     app.include_router(_routes())
+    app.include_router(web.router())
+    if loopback_only:
+        app.add_middleware(LoopbackHostsOnly)
     return app
 
 
@@ -568,7 +576,8 @@ def serve(host: str | None = None, port: int | None = None) -> int:
 
     host = host or settings.server.host
     port = port or int(os.environ.get("PORT", "0")) or settings.server.port  # PORT: set by hosting platforms
-    if host not in ("127.0.0.1", "localhost", "::1") and settings.server.allow_local_paths:
+    loopback = host in LOOPBACK
+    if not loopback and settings.server.allow_local_paths:
         print(
             "kartrix serve: refusing to listen on a public address while server.allow_local_paths is true — "
             "anyone who signs up could point the agent at this machine's folders. Set it to false for hosting.",
@@ -576,7 +585,17 @@ def serve(host: str | None = None, port: int | None = None) -> int:
         return 3
     if not settings.server.allow_local_paths:
         harden_for_hosting()
-    uvicorn.run(create_app(), host=host, port=port, log_level="info", proxy_headers=True, forwarded_allow_ips="*")
+    if loopback:
+        shown = f"[{host}]" if ":" in host else host
+        print(f"kartrix serve: web UI at http://{shown}:{port}/")
+    uvicorn.run(
+        create_app(loopback_only=loopback),
+        host=host,
+        port=port,
+        log_level="info",
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+    )
     return 0
 
 

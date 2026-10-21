@@ -317,6 +317,39 @@ async def test_sessions_continue_and_stay_in_their_workspace(
     assert [s["id"] for s in sessions] == [fresh["session_id"], mine]  # recorded when its run starts
 
 
+async def test_the_web_uis_calls(server: tuple[FakePool, httpx.AsyncClient], tmp_path: Path) -> None:
+    """The browser page (kartrix/web) is served next to the API and uses it like the CLI: a "web" token as a bearer,
+    the workspace's runs newest first with their conversations, a feed that replays, and logout revoking the token."""
+    pool, http = server
+    page = await http.get("http://kartrix.test/")
+    assert page.status_code == 200
+    assert "/assets/app.js" in page.text
+    body = {"email": "web@example.com", "password": "hunter2hunter2", "token_name": "web"}
+    assert (await http.post("/auth/signup", json=body)).status_code == 201
+    login = await http.post("/auth/login", json=body)
+    assert login.status_code == 200, login.text
+    web = {"Authorization": f"Bearer {login.json()['token']}"}
+    ws = await _workspace(http, web, tmp_path / "repo")
+    first = (await http.post(f"/workspaces/{ws['id']}/runs", json={"input": "one"}, headers=web)).json()
+    pool.emit(first["id"], "event", {"type": "assistant_message", "text": "1"})
+    pool.finish_run(first["id"], status="completed", answer="1")
+    await pool.flush()
+    second = await http.post(
+        f"/workspaces/{ws['id']}/runs", json={"kind": "ask", "input": "two", "new_session": True}, headers=web
+    )
+    assert second.status_code == 202, second.text
+    runs = (await http.get(f"/workspaces/{ws['id']}/runs?limit=20", headers=web)).json()
+    assert [(r["input"], r["status"], r["answer"]) for r in runs] == [
+        ("two", "running", None),
+        ("one", "completed", "1"),
+    ]
+    assert runs[0]["session_id"] != runs[1]["session_id"]
+    feed = await http.get(f"/runs/{first['id']}/events?after=0", headers=web)
+    assert [kind for _, kind, _ in _sse(feed.text)] == ["event", "run_finished"]
+    assert (await http.post("/auth/logout", headers=web)).status_code == 204
+    assert (await http.get("/me", headers=web)).status_code == 401
+
+
 async def test_user_memories_are_per_user(fake_embedder: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from kartrix.memory import long_term
     from kartrix.server import auth
