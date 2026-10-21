@@ -118,6 +118,6 @@ def review_note(survey: TestSurvey) -> str:
             "command (no test_*.py, *.test.ts, *_test.go or tests/ directory; no pytest/tox config, package.json "
             "test script or Makefile test target). Don't search for tests or run a test runner. Check the change "
             "another way — read the changed files and, where it helps, run the changed program or module with "
-            'run_command (e.g. "python calc.py") — then give your verdict.'
+            'run_command (its file, e.g. "python calc.py", not "python -c") — then give your verdict.'
         )
     return ""

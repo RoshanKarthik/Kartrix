@@ -19,11 +19,12 @@ from pydantic import Field
 
 from kartrix.agent import graph as graph_mod
 from kartrix.agent.factory import agent_middleware
-from kartrix.agent.graph import REVIEWER_PROMPT
+from kartrix.agent.graph import CODER_PROMPT, COMMAND_RULE, REVIEWER_PROMPT
 from kartrix.config import settings
 from kartrix.context.project_tests import TestSurvey, review_note, survey_tests
 from kartrix.security import workspace as ws_mod
 from kartrix.security.approvals import ApprovalMiddleware
+from kartrix.security.command_policy import evaluate
 from kartrix.security.workspace import Workspace
 
 CALC = "def add(a, b):\n    return a + b\n\n\ndef subtract(a, b):\n    return a - b\n"
@@ -107,6 +108,16 @@ def test_the_notes() -> None:
     assert "found no test files and no test command" in none and "Don't search for tests" in none
     found = review_note(TestSurvey(("tests/test_calc.py",), complete=True))
     assert "- tests/test_calc.py" in found and "Run the tests." in found and "no test" not in found
+
+
+def test_the_reviewer_runs_files_not_inline_code(root: Path) -> None:
+    """Live (2026-10-21) the reviewer checked calc.py with `python -c "import calc; …"`: the policy can't tell what
+    inline code does, so even in auto mode the user is asked. Running the file is a plain run."""
+    assert COMMAND_RULE in REVIEWER_PROMPT and COMMAND_RULE in CODER_PROMPT
+    assert '"python calc.py"' in REVIEWER_PROMPT and 'not "python -c"' in review_note(TestSurvey((), complete=True))
+    assert evaluate('python -c "import calc"', mode="auto", log=False).action == "ask"
+    assert evaluate('node -e "1"', mode="auto", log=False).action == "ask"
+    assert evaluate("python calc.py", mode="auto", log=False).action == "allow"
 
 
 def test_the_reviewer_keeps_the_rule_for_projects_with_tests() -> None:

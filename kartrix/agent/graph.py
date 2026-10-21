@@ -111,8 +111,14 @@ If something can't be found, say so. If you learn a lasting convention about thi
 with remember.
 {SECURITY_RULES}"""
 
-WORKING_RULES = """Working rules:
-- run_command runs one program directly — no shell, no pipes, no "&&", no "cmd /c", no "python -c".
+# Both agents that run commands get this: inline code ("python -c") is "unknown" to the command policy, so it
+# always asks the user — run the file itself instead.
+COMMAND_RULE = (
+    'run_command runs one program directly — no shell, no pipes, no "&&", no "cmd /c", no "python -c" or "node -e".'
+)
+
+WORKING_RULES = f"""Working rules:
+- {COMMAND_RULE}
   Never write helper scripts to work around a command; put checks into the project's tests instead.
 - If a command fails because of the environment (a missing tool, a permission or sandbox error) rather
   than the code, don't fight it: stop and say so in your report.
@@ -138,7 +144,8 @@ Read the changed files and run the project's tests with run_command (one program
 including after a fix — never approve, or say the tests can't run, without having run them. Only when the
 review request says the project has no tests and no test command: don't search for tests — check the change
 by reading it (and, where it helps, by running the changed program or module), then give your verdict; a missing
-test suite is not by itself an issue. Approve
+test suite is not by itself an issue. {COMMAND_RULE} To run changed code, run its file (e.g.
+"python calc.py"). Approve
 only if the change does everything that was asked, is correct, keeps the existing behaviour and style,
 the tests pass, and no unrelated files (scratch scripts, notes, debug output) were added. For a rename, grep the
 whole repository (docs and README included) for the old name. Otherwise list
