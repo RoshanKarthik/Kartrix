@@ -5,6 +5,8 @@
     START → compress → assemble → route ─┬─ chat ────────────────────────────────┐
                                          ├─ question → explore ──────────────────┤
                                          └─ change ──→ explore → code ⇄ review ──┴→ respond → END
+                                                         ↑                           │
+                                                         └─ chat that needs tools ───┘
 
 - **compress** — once the conversation passes ``memory.summarize_at_tokens``, old turns become one
   summary (``kartrix.agent.context.compress``).
@@ -21,7 +23,9 @@
   in a fresh context (it can read files and run the tests; its brief says which tests the project has, or that
   it has none — ``kartrix.context.project_tests``), with a structured verdict. A rejected
   change goes back to the coder with the reviewer's notes (at most ``agents.max_review_rounds``).
-- **respond** — the main model answers the user from what the subagents reported.
+- **respond** — the main model answers the user from what the subagents reported. It has no tools; a reply that
+  calls one anyway (``kartrix.agent.tool_markup``) is never shown: for a chat request the request runs as a change
+  (once), otherwise the reports are the answer.
 
 Each subagent is a ``create_agent`` graph with the shared middleware stack (fallback/retry, audit,
 budget, content guard), so budgets, the kill switch, auditing and injection defences cover every
@@ -46,6 +50,7 @@ from pydantic import BaseModel, Field
 from kartrix.agent import context as agent_context
 from kartrix.agent.reliability import CompletionGuardMiddleware, final_text
 from kartrix.agent.streaming import AnswerStream
+from kartrix.agent.tool_markup import has_tool_markup
 from kartrix.agent.tools import remember, search_codebase, symbol_graph
 from kartrix.config import settings
 from kartrix.context.project_tests import TestSurvey, review_note, survey_tests
@@ -67,6 +72,7 @@ Route = Literal["chat", "question", "change"]
 class AgentState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_messages]
     route: Route
+    reroute: bool  # the responder found the chat request needs tools: run it as a change (once per turn)
     context: str  # assembled context for this turn (memory, project notes) — see kartrix.agent.context
     findings: str
     change_report: str
@@ -91,17 +97,21 @@ class ReviewVerdict(BaseModel):
 
 ROUTER_PROMPT = """You route requests for a coding assistant working inside a code repository.
 Decide how to handle the user's latest message:
-- chat: greetings, thanks, questions about you, anything not about this repository's code
-- question: understanding, locating or explaining code — nothing must change
-- change: create, edit, fix, refactor, test or run something in the repository
+- chat: greetings, thanks, questions about you — anything answered without the repository's files and without
+  running anything
+- question: understanding, locating or explaining code — nothing must change or run
+- change: create, edit, fix, refactor or test something, or run any command or program in the workspace (even one
+  that has nothing to do with the repository's code: only the change route can run commands)
 
 Examples:
 - "Add a --json flag to the stats command" → change
 - "slugify returns X but should return Y" → change (a bug report asks for a fix)
 - "Write tests for the parser" / "Rename foo to bar" / "Run the tests" → change
+- 'Run the command: python -c "print(6*7)" and tell me what it printed' / "What does git status say?" → change
 - "Where is the config loaded?" / "Why does login fail?" / "What does paginate do?" → question
 - "Thanks!" / "Which model are you?" → chat
-When unsure between question and change, choose change if the user expects files to be different afterwards."""
+When unsure between question and change, choose change if the user expects files to be different afterwards or
+something to be run."""
 
 EXPLORER_PROMPT = f"""You are the explorer: a read-only code investigator.
 Find what the request needs in this repository: use search_codebase first, then grep, glob and read_file
@@ -112,9 +122,12 @@ with remember.
 {SECURITY_RULES}"""
 
 # Both agents that run commands get this: inline code ("python -c") is "unknown" to the command policy, so it
-# always asks the user — run the file itself instead.
+# always asks the user — run the file itself instead. A command the user asked for is theirs to approve: the coder
+# refused 'Run the command: python -c "print(6*7)"' under a flat ban.
 COMMAND_RULE = (
-    'run_command runs one program directly — no shell, no pipes, no "&&", no "cmd /c", no "python -c" or "node -e".'
+    'run_command runs one program directly — no shell, no pipes, no "&&", no "cmd /c". Don\'t choose "python -c" or '
+    "\"node -e\" yourself (inline code always needs the user's approval): run a file instead. A command the user's "
+    "request spells out is the exception: run it exactly as given."
 )
 
 WORKING_RULES = f"""Working rules:
@@ -155,13 +168,17 @@ can't be done in this run: don't ask for it again — judge the rest, and approv
 coder's report says plainly what was not done.
 {SECURITY_RULES}"""
 
+NEEDS_TOOLS = "this needs tools — handing it to the coder"  # the responder's step summary when it re-routes
+
 RESPOND_PROMPT = """You are Kartrix, a senior software engineer helping the user with their repository.
 Answer the user's latest message using the reports from your team (explorer, coder, reviewer) below.
 Reference specific files, functions and line numbers. Be concise.
 When the team made a change, it is already done — the files listed under "Files changed" contain it. Say what
 was changed and the test result; never tell the user to make the change themselves. The explorer's notes are
 from before the change. If the work was stopped, a step was declined or blocked, or the reviewer still had
-issues, say so plainly and say what is left."""
+issues, say so plainly and say what is left.
+You have no tools in this step: write your answer as plain text. Only the reports say what was read or run —
+never claim a file's content or a command's output they don't show."""
 
 
 def _text(content: Any) -> str:
@@ -206,18 +223,27 @@ def _written_files(events: list[Event], before: list[str]) -> list[str]:
     return out
 
 
+_POLITE = r"^\s*(?:(?:please|can you|could you|would you)\s+)*"
+_RUN = r"(?:run|execute|exec)\b(?!\s+(?:me\s+)?through)"  # not "run me through how login works"
 _CHANGE_VERBS = re.compile(
-    r"^\s*(?:please\s+|can you\s+|could you\s+)?(?:add|fix|implement|create|make|change|update|remove|delete|"
+    _POLITE + r"(?:add|fix|implement|create|make|change|update|remove|delete|"
     r"rename|refactor|write|build|replace|move|convert|support|handle|improve|optimi[sz]e|migrate|upgrade|bump|"
-    r"edit|set up|setup|install|extend|split|merge|introduce|drop|clean up|reformat|format|run)\b",
+    r"edit|set up|setup|install|extend|split|merge|introduce|drop|clean up|reformat|format)\b|" + _POLITE + _RUN,
     re.IGNORECASE,
 )
+_RUN_VERBS = re.compile(_POLITE + _RUN, re.IGNORECASE)
 
 
 def looks_like_change(request: str) -> bool:
     """An imperative request ("Add …", "Fix …", "Please rename …") asks for files to change, whatever the router
     model thought: a small router occasionally calls those questions, and then nothing gets done."""
     return bool(_CHANGE_VERBS.match(request))
+
+
+def asks_to_run(request: str) -> bool:
+    """A request to run something ("Run …", "Execute …") needs run_command, which only the change route has: the
+    router has called one chat (a command "unrelated to the repository"), and the responder can't run anything."""
+    return bool(_RUN_VERBS.match(request))
 
 
 def _stopped() -> str | None:
@@ -289,12 +315,13 @@ class AgentGraph:
         except Exception as e:  # a router failure must not lose the request: treat it as a question
             logger.warning("Router failed; treating the request as a question", extra={"error": repr(e)})
             route = "question"
-        if route == "question" and looks_like_change(request):
-            logger.info("Router said question for an imperative request; treating it as a change")
+        if (route == "question" and looks_like_change(request)) or (route == "chat" and asks_to_run(request)):
+            logger.info("Router missed an imperative request; treating it as a change", extra={"router": route})
             route = "change"
         emit(AgentStep(agent="router", status="finished", summary=route))
         return {
             "route": route,
+            "reroute": False,
             "rounds": 0,
             "findings": "",
             "change_report": "",
@@ -347,7 +374,7 @@ class AgentGraph:
 
     async def respond(self, state: AgentState) -> dict[str, Any]:
         if reason := _stopped():
-            return {"messages": [AIMessage(f"Stopped: {reason}.")]}
+            return {"messages": [AIMessage(f"Stopped: {reason}.")], "reroute": False}
         parts = []
         if state.get("findings"):
             when = " (from before the change)" if state.get("route") == "change" else ""
@@ -366,11 +393,18 @@ class AgentGraph:
             {"messages": [HumanMessage(_brief(state, *parts))]}, config={"callbacks": [AnswerStream()]}
         )
         answer = final_text(out.get("messages", []))
+        if has_tool_markup(answer):  # it tried to call a tool: nothing ran, and the rest may invent the output
+            if state.get("route") == "chat" and not _stopped():
+                logger.info("Responder tried to call a tool for a chat request; running it as a change")
+                emit(AgentStep(agent="responder", status="finished", summary=NEEDS_TOOLS))
+                return {"route": "change", "reroute": True, "steps": ["responder"]}
+            logger.warning("Responder wrote a tool call instead of an answer", extra={"route": state.get("route")})
+            answer = ""
         if not answer:  # the model gave nothing back even after the nudges: hand over the reports themselves
             logger.warning("Responder returned no answer; falling back to the subagents' reports")
             answer = "\n\n".join(parts) or "Sorry — the model returned no answer. Please try again."
         emit(AgentStep(agent="responder", status="finished"))
-        return {"messages": [AIMessage(answer)], "steps": ["responder"]}
+        return {"messages": [AIMessage(answer)], "reroute": False, "steps": ["responder"]}
 
     @staticmethod
     async def _survey_tests() -> TestSurvey:
@@ -418,6 +452,10 @@ class AgentGraph:
             return "respond"
         return "code"
 
+    @staticmethod
+    def after_respond(state: AgentState) -> str:
+        return "explore" if state.get("reroute") else END
+
     def compile(self, checkpointer: Any, assemble: Any = None) -> Any:
         graph = StateGraph(AgentState)
         if assemble is not None:
@@ -438,5 +476,5 @@ class AgentGraph:
         graph.add_conditional_edges("explore", self.after_explore, ["code", "respond"])
         graph.add_edge("code", "review")
         graph.add_conditional_edges("review", self.after_review, ["code", "respond"])
-        graph.add_edge("respond", END)
+        graph.add_conditional_edges("respond", self.after_respond, ["explore", END])
         return graph.compile(checkpointer=checkpointer, name="kartrix")

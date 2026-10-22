@@ -18,13 +18,17 @@ _NOTICE_STYLE = {"info": "dim", "success": "green", "warning": "yellow", "error"
 _NOTICE_PREFIX = {"success": "✓ ", "warning": "", "error": "", "info": ""}
 
 
+def _same(streamed: str, final: str) -> bool:
+    return streamed.split() == final.split()
+
+
 class ConsoleRenderer:
     def __init__(self, console: Console | None = None, *, show_tool_calls: bool = True) -> None:
         self.console = console or Console()
         self.show_tool_calls = show_tool_calls
         self._held: list[ev.Event] | None = None
         self._lock = threading.Lock()
-        self._streamed: set[str | None] = set()  # runs whose answer was already printed token by token
+        self._streamed: dict[str | None, str] = {}  # runs whose answer is being printed token by token: the text
         self._working: str | None = None  # the agent whose "working…" line is on screen (resumes re-announce it)
 
     def hold(self) -> None:
@@ -58,14 +62,15 @@ class ConsoleRenderer:
                 self._line(f"Working on: {question[:200]}… (Ctrl+C stops)", "dim")
             case ev.AssistantDelta(text=text, run_id=run_id):
                 if run_id not in self._streamed:
-                    self._streamed.add(run_id)
+                    self._streamed[run_id] = ""
                     self.console.print()
+                self._streamed[run_id] += text
                 self.console.print(text, end="", markup=False, highlight=False, soft_wrap=True)
             case ev.AssistantMessage(text=text, cached=cached, run_id=run_id):
                 if run_id in self._streamed:
-                    self._streamed.discard(run_id)
-                    self.console.print()  # the answer is on screen already; end its line
-                    return
+                    self.console.print()  # end the streamed answer's line
+                    if _same(self._streamed.pop(run_id), text):
+                        return  # the answer is on screen already; else the agent settled on another one
                 if cached:
                     self._line("(answer from the semantic cache)", "dim")
                 self.console.print(text, markup=False, highlight=False)
@@ -87,6 +92,10 @@ class ConsoleRenderer:
                 self._working = None
                 if event.agent == "router":
                     self._line(f"◆ router: {event.summary}", "dim")
+                elif event.agent == "responder" and event.summary:  # no answer yet: the request goes on
+                    if self._streamed.pop(event.run_id, None) is not None:
+                        self.console.print()  # end what streamed before the responder gave up on it
+                    self._line(f"◆ responder: {event.summary}", "dim")
                 elif event.agent == "reviewer":
                     style = "green" if event.summary == "approved" else "yellow"
                     self._line(f"◆ reviewer: {event.summary}", style)

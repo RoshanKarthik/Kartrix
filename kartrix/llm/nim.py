@@ -39,9 +39,10 @@ def _args(call: dict[str, Any]) -> dict[str, Any] | None:
     return args if isinstance(args, dict) else None
 
 
-def parse_text_tool_calls(text: str, tool_names: set[str]) -> list[ToolCall] | None:
+def parse_text_tool_calls(text: str, tool_names: set[str] | None) -> list[ToolCall] | None:
     """The tool calls ``text`` consists of (JSON objects with ``name`` and ``parameters``/``arguments``, in
-    brackets or not), or None when it holds anything else or names a tool that wasn't bound."""
+    brackets or not), or None when it holds anything else or names a tool that wasn't bound (``tool_names``;
+    None: any name)."""
     text = _WRAPPER.sub("", text)
     calls: list[ToolCall] = []
     i = 0
@@ -57,7 +58,7 @@ def parse_text_tool_calls(text: str, tool_names: set[str]) -> list[ToolCall] | N
         except ValueError:
             return None
         name = obj.get("name") if isinstance(obj, dict) else None
-        args = _args(obj) if isinstance(name, str) and name in tool_names else None
+        args = _args(obj) if isinstance(name, str) and (tool_names is None or name in tool_names) else None
         if name is None or args is None:
             return None
         calls.append(ToolCall(name=name, args=args, id=f"call-{uuid.uuid4()}", type="tool_call"))
