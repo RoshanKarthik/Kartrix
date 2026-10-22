@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ctypes
 import os
 import socket
 import sys
@@ -258,6 +259,41 @@ def test_appcontainer_confines_a_real_process(ws: Workspace, tmp_path: Path) -> 
     finally:
         backend.reset()
         delete_profile(container_name(ws.root))
+
+
+def test_appcontainer_announces_new_folder_grants(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A first Read/Modify grant on a folder can take minutes (Windows walks every file below it), so the
+    user is told before it starts; a grant already in the store, or a quick one, says nothing."""
+    from kartrix.core.events import Notice, collecting
+    from kartrix.sandbox import windows
+
+    monkeypatch.setenv("KARTRIX_HOME", str(tmp_path / "home"))  # a fresh grant store
+    calls: list[tuple[Path, str]] = []
+    monkeypatch.setattr(windows, "set_access", lambda path, sid, mask, mode: calls.append((path, "inherit")))
+    monkeypatch.setattr(windows, "set_access_here", lambda path, sid, mask, mode: calls.append((path, "here")))
+    toolchain = tmp_path / "Python311"
+    (toolchain / "Lib").mkdir(parents=True)
+    backend = windows.AppContainerBackend()
+    sid = windows.Sid(ctypes.c_void_p(), "local")  # never passed to Windows: the ACL calls are faked
+
+    with collecting() as seen:
+        backend._grant("kartrix.test", sid, toolchain, "read")
+        backend._grant("kartrix.test", sid, toolchain, "read")  # recorded: nothing to do
+        backend._grant("kartrix.test", sid, tmp_path, "traverse")  # this folder only: quick
+    notices = [e.text for e in seen if isinstance(e, Notice)]
+    assert notices == [
+        f"Setting up the sandbox's read access to {toolchain} (once per workspace; a big folder can take a minute "
+        "or two)"
+    ]
+    assert calls == [(toolchain, "inherit"), (tmp_path, "here")]
+
+    with collecting() as seen:
+        windows.AppContainerBackend()._grant("kartrix.test", sid, toolchain, "read")  # the store is on disk
+        backend._grant("kartrix.other", sid, toolchain, "modify")  # another container: a new entry
+    assert [e.text for e in seen if isinstance(e, Notice)] == [
+        f"Setting up the sandbox's write access to {toolchain} (once per workspace; a big folder can take a minute "
+        "or two)"
+    ]
 
 
 def test_unwrap_launcher(tmp_path: Path) -> None:

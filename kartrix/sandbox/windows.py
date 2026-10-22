@@ -17,6 +17,8 @@ An AppContainer process runs with its own SID and can open only what an ACL gran
   ``deny_write`` paths get Read & execute back. Refreshed before every run, so new ``.env`` files
   are covered.
   Every grant is recorded in the user data folder; ``kartrix sandbox reset`` removes them all.
+  A new Read or Modify grant on a folder is announced first: Windows copies the entry onto every file
+  below it, which takes a minute or more for a Python install (tens of thousands of files).
 - Two Python details that break inside an AppContainer are worked around for sandboxed runs only:
   a venv's console-script launchers (``pytest.exe`` made by uv or pip) fail to resolve their own
   path, so they run as ``python.exe <launcher>`` (the launcher is a zip app); and Python 3.12.4+
@@ -51,6 +53,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from kartrix.config import settings
+from kartrix.core.events import notice
 from kartrix.observability.logger import get_logger
 from kartrix.paths import user_data_dir
 from kartrix.sandbox import policy
@@ -700,7 +703,12 @@ class AppContainerBackend(Backend):
     def _grant(self, name: str, sid: Sid, path: Path, kind: str) -> None:
         if not path.exists() or self.grants.has(name, path, kind):
             return
-        logger.info("Sandbox access granted", extra={"container": name, "path": str(path), "kind": kind})
+        if kind in _MASKS and path.is_dir():  # Windows copies the entry onto every file below: minutes for a toolchain
+            notice(
+                f"Setting up the sandbox's {'write' if kind == 'modify' else 'read'} access to {path} "
+                "(once per workspace; a big folder can take a minute or two)"
+            )
+        started = time.monotonic()
         if kind == "traverse":
             set_access_here(path, sid, _TRAVERSE, _GRANT)
         elif kind in _MASKS:
@@ -709,6 +717,10 @@ class AppContainerBackend(Backend):
         else:
             protect(path, sid, readable=kind == "deny_write")
         self.grants.add(name, path, kind)
+        logger.info(
+            "Sandbox access granted",
+            extra={"container": name, "path": str(path), "kind": kind, "seconds": round(time.monotonic() - started, 1)},
+        )
 
     def _grant_all(self, name: str, sid: Sid, ws: Workspace, state: Path, exe: Path) -> None:
         """Every grant a command needs (called under :func:`acl_lock`)."""
